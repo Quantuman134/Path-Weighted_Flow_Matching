@@ -273,13 +273,14 @@ def main(args):
     # Note that parameter initialization is done within the SiT constructor
     ema = deepcopy(model).to(device)  # Create an EMA of the model for use after training
 
+    # Load checkpoint if provided (before DDP wrapping)
+    checkpoint_state = None
     if args.ckpt is not None:
         ckpt_path = args.ckpt
-        state_dict = find_model(ckpt_path)
-        model.load_state_dict(state_dict["model"])
-        ema.load_state_dict(state_dict["ema"])
-        opt.load_state_dict(state_dict["opt"])
-        args = state_dict["args"]
+        checkpoint_state = find_model(ckpt_path)
+        model.load_state_dict(checkpoint_state["model"])
+        ema.load_state_dict(checkpoint_state["ema"])
+        args = checkpoint_state["args"]
 
     requires_grad(ema, False)
     
@@ -297,6 +298,10 @@ def main(args):
 
     # Setup optimizer (we used default Adam betas=(0.9, 0.999) and a constant learning rate of 1e-4 in our paper):
     opt = torch.optim.AdamW(model.parameters(), lr=1e-4, weight_decay=0)
+    
+    # Load optimizer state if resuming from checkpoint
+    if checkpoint_state is not None:
+        opt.load_state_dict(checkpoint_state["opt"])
 
     # Setup data:
     transform = transforms.Compose([
