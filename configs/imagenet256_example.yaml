@@ -1,0 +1,51 @@
+# Example Configuration for SiT Training on ImageNet 256x256
+
+# Data Settings
+data:
+  data_path: '/path/to/imagenet/train'  # REQUIRED: Path to training data (ImageFolder format)
+  val_data_path: '/path/to/imagenet/val'  # Optional: Path to validation data for FID evaluation
+
+# Model Settings
+model:
+  model: 'SiT-XL/2'  # Model architecture: SiT-XL/2, SiT-L/2, SiT-B/2, SiT-S/2
+  image_size: 256  # Image size: 256 or 512
+  num_classes: 1000  # Number of classes (1000 for ImageNet)
+  vae: 'ema'  # VAE model: 'ema' or 'mse'
+
+# Transport Settings (controls the diffusion process)
+transport:
+  path_type: 'Linear'  # Path type: 'Linear', 'GVP', or 'VP'
+  prediction: 'velocity'  # Prediction type: 'velocity', 'score', or 'noise'
+  loss_weight: null  # Loss weight: null, 'velocity', or 'likelihood'
+  sample_eps: null  # Optional: Sampling epsilon (e.g., 1e-3)
+  train_eps: null  # Optional: Training epsilon (e.g., 1e-5)
+
+# Training Settings
+training:
+  epochs: 1400  # Number of training epochs
+  global_batch_size: 256  # Total batch size across all GPUs (256 = 32 per GPU with 8 GPUs)
+  global_seed: 0  # Random seed for reproducibility
+  num_workers: 4  # Number of data loading workers per GPU
+
+# Logging Settings
+logging:
+  results_dir: 'results'  # Directory to save results
+  log_every: 100  # Log training info every N steps
+  ckpt_every: 50000  # Save checkpoint every N steps
+  sample_every: 10000  # Generate samples every N steps
+  wandb: false  # Enable Weights & Biases logging (set to true if using wandb)
+  wandb_entity: 'your-entity'  # W&B entity name
+  wandb_project: 'SiT-ImageNet'  # W&B project name
+  
+# Validation Settings
+validation:
+  val_num_samples: 5000  # Number of samples to generate for FID validation
+  val_log_images: 16  # Number of validation images to log to wandb
+
+# Sampling Settings
+sampling:
+  cfg_scale: 4.0  # Classifier-free guidance scale (1.0 = no guidance, higher = stronger guidance)
+
+# Checkpoint Settings
+checkpoint:
+  ckpt: null  # Optional: Path to checkpoint to resume training from (e.g., 'results/001-SiT-XL-2/checkpoints/0100000.pt')

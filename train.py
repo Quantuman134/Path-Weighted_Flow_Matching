@@ -23,12 +23,12 @@ from time import time
 import argparse
 import logging
 import os
+import yaml
 
 from models import SiT_models
 from download import find_model
 from transport import create_transport, Sampler
 from diffusers.models import AutoencoderKL
-from train_utils import parse_transport_args
 import wandb_utils
 import sys
 sys.path.append('..')
@@ -42,6 +42,75 @@ except ImportError:
 #################################################################################
 #                             Training Helper Functions                         #
 #################################################################################
+
+def load_config(config_path):
+    """
+    Load configuration from YAML file.
+    """
+    with open(config_path, 'r') as f:
+        config = yaml.safe_load(f)
+    
+    # Validate required sections
+    required_sections = ['data', 'model', 'transport', 'training', 'logging', 'validation', 'sampling', 'checkpoint']
+    for section in required_sections:
+        if section not in config:
+            raise ValueError(f"Missing required section '{section}' in config file: {config_path}")
+    
+    return config
+
+
+def config_to_args(config):
+    """
+    Convert config dict to argparse.Namespace for compatibility with existing code.
+    """
+    args = argparse.Namespace()
+    
+    # Data settings
+    args.data_path = config['data']['data_path']
+    if args.data_path is None:
+        raise ValueError("data_path is required in config file")
+    args.val_data_path = config['data'].get('val_data_path', None)
+    
+    # Model settings
+    args.model = config['model']['model']
+    args.image_size = int(config['model']['image_size'])
+    args.num_classes = int(config['model']['num_classes'])
+    args.vae = config['model']['vae']
+    
+    # Transport settings
+    args.path_type = config['transport']['path_type']
+    args.prediction = config['transport']['prediction']
+    args.loss_weight = config['transport'].get('loss_weight', None)
+    args.sample_eps = config['transport'].get('sample_eps', None)
+    args.train_eps = config['transport'].get('train_eps', None)
+    
+    # Training settings
+    args.epochs = int(config['training']['epochs'])
+    args.global_batch_size = int(config['training']['global_batch_size'])
+    args.global_seed = int(config['training']['global_seed'])
+    args.num_workers = int(config['training']['num_workers'])
+    
+    # Logging settings
+    args.results_dir = config['logging']['results_dir']
+    args.log_every = int(config['logging']['log_every'])
+    args.ckpt_every = int(config['logging']['ckpt_every'])
+    args.sample_every = int(config['logging']['sample_every'])
+    args.wandb = bool(config['logging'].get('wandb', False))
+    args.wandb_entity = config['logging'].get('wandb_entity', os.environ.get('ENTITY', 'default'))
+    args.wandb_project = config['logging'].get('wandb_project', os.environ.get('PROJECT', 'SiT'))
+    
+    # Validation settings
+    args.val_num_samples = int(config['validation']['val_num_samples'])
+    args.val_log_images = int(config['validation']['val_log_images'])
+    
+    # Sampling settings
+    args.cfg_scale = float(config['sampling']['cfg_scale'])
+    
+    # Checkpoint settings
+    args.ckpt = config['checkpoint'].get('ckpt', None)
+    
+    return args
+
 
 @torch.no_grad()
 def update_ema(ema_model, model, decay=0.9999):
@@ -266,10 +335,8 @@ def main(args):
         logger = create_logger(experiment_dir)
         logger.info(f"Experiment directory created at {experiment_dir}")
 
-        entity = os.environ["ENTITY"]
-        project = os.environ["PROJECT"]
         if args.wandb:
-            wandb_utils.initialize(args, entity, experiment_name, project)
+            wandb_utils.initialize(args, args.wandb_entity, experiment_name, args.wandb_project)
     else:
         logger = create_logger(None)
 
@@ -291,7 +358,8 @@ def main(args):
         checkpoint_state = find_model(ckpt_path)
         model.load_state_dict(checkpoint_state["model"])
         ema.load_state_dict(checkpoint_state["ema"])
-        args = checkpoint_state["args"]
+        # Note: We don't override args from checkpoint to allow config file to control all settings
+        # The model weights and EMA weights are loaded, which is what's needed to resume training
 
     requires_grad(ema, False)
     
@@ -474,7 +542,7 @@ def main(args):
 
                 if args.wandb:
                     wandb_utils.log_image(out_samples, train_steps)
-                logging.info("Generating EMA samples done.")
+                logger.info("Generating EMA samples done.")
                 
                 # Run validation if validation data is provided
                 if val_loader is not None:
@@ -501,32 +569,14 @@ def main(args):
 
 
 if __name__ == "__main__":
-    # Default args here will train SiT-XL/2 with the hyperparameters we used in our paper (except training iters).
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--data-path", type=str, required=True)
-    parser.add_argument("--results-dir", type=str, default="results")
-    parser.add_argument("--model", type=str, choices=list(SiT_models.keys()), default="SiT-XL/2")
-    parser.add_argument("--image-size", type=int, choices=[256, 512], default=256)
-    parser.add_argument("--num-classes", type=int, default=1000)
-    parser.add_argument("--epochs", type=int, default=1400)
-    parser.add_argument("--global-batch-size", type=int, default=256)
-    parser.add_argument("--global-seed", type=int, default=0)
-    parser.add_argument("--vae", type=str, choices=["ema", "mse"], default="ema")  # Choice doesn't affect training
-    parser.add_argument("--num-workers", type=int, default=4)
-    parser.add_argument("--log-every", type=int, default=100)
-    parser.add_argument("--ckpt-every", type=int, default=50_000)
-    parser.add_argument("--sample-every", type=int, default=10_000)
-    parser.add_argument("--cfg-scale", type=float, default=4.0)
-    parser.add_argument("--wandb", action="store_true")
-    parser.add_argument("--ckpt", type=str, default=None,
-                        help="Optional path to a custom SiT checkpoint")
-    parser.add_argument("--val-data-path", type=str, default=None,
-                        help="Path to validation dataset (ImageFolder format). If provided, validation runs at --sample-every intervals")
-    parser.add_argument("--val-num-samples", type=int, default=5_000,
-                        help="Number of samples to use for validation (randomly sampled from validation set)")
-    parser.add_argument("--val-log-images", type=int, default=16,
-                        help="Number of random validation images to log to wandb")
-
-    parse_transport_args(parser)
+    parser = argparse.ArgumentParser(description="SiT Training with YAML configuration")
+    parser.add_argument("--config", type=str, required=True,
+                        help="Path to YAML configuration file")
+    
     args = parser.parse_args()
+    
+    # Load config file and convert to args
+    config = load_config(args.config)
+    args = config_to_args(config)
+    
     main(args)
