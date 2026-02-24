@@ -30,6 +30,13 @@ from transport import create_transport, Sampler
 from diffusers.models import AutoencoderKL
 from train_utils import parse_transport_args
 import wandb_utils
+import sys
+sys.path.append('..')
+try:
+    from FID import compute_fid
+except ImportError:
+    print('Warning: FID module not found. Validation will not be available.')
+    compute_fid = None
 
 
 #################################################################################
@@ -101,6 +108,117 @@ def center_crop_arr(pil_image, image_size):
     crop_y = (arr.shape[0] - image_size) // 2
     crop_x = (arr.shape[1] - image_size) // 2
     return Image.fromarray(arr[crop_y: crop_y + image_size, crop_x: crop_x + image_size])
+
+
+@torch.no_grad()
+def validate_fid(ema_model, vae, val_loader, transport_sampler, args, device, rank, logger):
+    """
+    Compute FID score on validation set.
+    
+    Args:
+        ema_model: EMA model for generation
+        vae: VAE for encoding/decoding
+        val_loader: Validation data loader
+        transport_sampler: Transport sampler for generation
+        args: Training arguments
+        device: Device to run on
+        rank: DDP rank
+        logger: Logger instance
+    
+    Returns:
+        FID score (float)
+    """
+    if compute_fid is None:
+        logger.info('FID computation not available. Skipping validation.')
+        return None
+    
+    ema_model.eval()
+    latent_size = args.image_size // 8
+    use_cfg = args.cfg_scale > 1.0
+    
+    # Collect validation images and labels
+    real_images_list = []
+    labels_list = []
+    
+    for x, y in val_loader:
+        real_images_list.append(x)
+        labels_list.append(y)
+    
+    # Concatenate and move to device
+    real_images = torch.cat(real_images_list, dim=0).to(device)  # (N, 3, H, W) in [-1, 1]
+    labels = torch.cat(labels_list, dim=0).to(device)  # (N,)
+    
+    n = real_images.size(0)
+    logger.info(f"Generating {n} samples for FID validation...")
+    
+    # Generate images with same class labels
+    generated_images_list = []
+    batch_size = args.global_batch_size // dist.get_world_size()
+    
+    for i in range(0, n, batch_size):
+        end_idx = min(i + batch_size, n)
+        curr_batch_size = end_idx - i
+        
+        # Get labels for this batch
+        ys = labels[i:end_idx]
+        
+        # Create noise
+        zs = torch.randn(curr_batch_size, 4, latent_size, latent_size, device=device)
+        
+        # Setup for CFG if needed
+        if use_cfg:
+            zs = torch.cat([zs, zs], 0)
+            y_null = torch.tensor([1000] * curr_batch_size, device=device)
+            ys = torch.cat([ys, y_null], 0)
+            sample_model_kwargs = dict(y=ys, cfg_scale=args.cfg_scale)
+            model_fn = ema_model.forward_with_cfg
+        else:
+            sample_model_kwargs = dict(y=ys)
+            model_fn = ema_model.forward
+        
+        # Generate samples
+        sample_fn = transport_sampler.sample_ode()
+        samples = sample_fn(zs, model_fn, **sample_model_kwargs)[-1]
+        
+        if use_cfg:
+            samples, _ = samples.chunk(2, dim=0)
+        
+        # Decode from latent space
+        samples = vae.decode(samples / 0.18215).sample
+        generated_images_list.append(samples.cpu())
+    
+    generated_images = torch.cat(generated_images_list, dim=0)  # (N, 3, H, W) in [-1, 1]
+    
+    # Gather all images across all GPUs
+    # Note: Use list-based gather to handle different sizes per rank (when dataset doesn't divide evenly)
+    all_real_list = [torch.zeros_like(real_images) for _ in range(dist.get_world_size())]
+    all_gen_list = [torch.zeros_like(generated_images) for _ in range(dist.get_world_size())]
+    
+    dist.all_gather(all_real_list, real_images)
+    dist.all_gather(all_gen_list, generated_images.to(device))
+    
+    # Compute FID only on rank 0
+    fid_score = None
+    if rank == 0:
+        # Concatenate all gathered tensors
+        all_real_images = torch.cat(all_real_list, dim=0)
+        all_generated_images = torch.cat(all_gen_list, dim=0)
+        
+        # Convert from [-1, 1] to [0, 1]
+        all_real_images = (all_real_images + 1.0) / 2.0
+        all_generated_images = (all_generated_images + 1.0) / 2.0
+        
+        # Clamp to [0, 1]
+        all_real_images = torch.clamp(all_real_images, 0.0, 1.0)
+        all_generated_images = torch.clamp(all_generated_images, 0.0, 1.0)
+        
+        logger.info('Computing FID score...')
+        fid_score = compute_fid(all_real_images.cpu(), all_generated_images.cpu(), 
+                               batch_size=32, device=str(device))
+        logger.info(f'Validation FID Score: {fid_score:.4f}')
+    
+    dist.barrier()
+    return fid_score
 
 
 #################################################################################
@@ -206,6 +324,40 @@ def main(args):
     )
     logger.info(f"Dataset contains {len(dataset):,} images ({args.data_path})")
 
+    # Setup validation data if provided:
+    val_loader = None
+    if args.val_data_path is not None:
+        val_transform = transforms.Compose([
+            transforms.Lambda(lambda pil_image: center_crop_arr(pil_image, args.image_size)),
+            transforms.ToTensor(),
+            transforms.Normalize(mean=[0.5, 0.5, 0.5], std=[0.5, 0.5, 0.5], inplace=True)
+        ])
+        val_dataset = ImageFolder(args.val_data_path, transform=val_transform)
+        
+        # Randomly sample val_num_samples from validation set
+        if args.val_num_samples > 0 and args.val_num_samples < len(val_dataset):
+            indices = torch.randperm(len(val_dataset))[:args.val_num_samples].tolist()
+            val_dataset = torch.utils.data.Subset(val_dataset, indices)
+        
+        # Use DistributedSampler for validation as well
+        val_sampler = DistributedSampler(
+            val_dataset,
+            num_replicas=dist.get_world_size(),
+            rank=rank,
+            shuffle=False,
+            seed=args.global_seed
+        )
+        val_loader = DataLoader(
+            val_dataset,
+            batch_size=local_batch_size,
+            shuffle=False,
+            sampler=val_sampler,
+            num_workers=args.num_workers,
+            pin_memory=True,
+            drop_last=False
+        )
+        logger.info(f"Validation dataset contains {len(val_dataset):,} images ({args.val_data_path})")
+
     # Prepare models for training:
     update_ema(ema, model.module, decay=0)  # Ensure EMA is initialized with synced weights
     model.train()  # important! This enables embedding dropout for classifier-free guidance
@@ -307,6 +459,15 @@ def main(args):
                 if args.wandb:
                     wandb_utils.log_image(out_samples, train_steps)
                 logging.info("Generating EMA samples done.")
+                
+                # Run validation if validation data is provided
+                if val_loader is not None:
+                    logger.info("Running validation...")
+                    fid_score = validate_fid(ema, vae, val_loader, transport_sampler, args, device, rank, logger)
+                    if rank == 0 and fid_score is not None and args.wandb:
+                        wandb_utils.log({"validation/FID": fid_score}, step=train_steps)
+                    model.train()  # Set back to training mode
+                    logger.info("Validation done.")
 
     model.eval()  # important! This disables randomized embedding dropout
     # do any sampling/FID calculation/etc. with ema (or model) in eval mode ...
@@ -335,6 +496,10 @@ if __name__ == "__main__":
     parser.add_argument("--wandb", action="store_true")
     parser.add_argument("--ckpt", type=str, default=None,
                         help="Optional path to a custom SiT checkpoint")
+    parser.add_argument("--val-data-path", type=str, default=None,
+                        help="Path to validation dataset (ImageFolder format). If provided, validation runs at --sample-every intervals")
+    parser.add_argument("--val-num-samples", type=int, default=5_000,
+                        help="Number of samples to use for validation (randomly sampled from validation set)")
 
     parse_transport_args(parser)
     args = parser.parse_args()
