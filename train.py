@@ -126,11 +126,11 @@ def validate_fid(ema_model, vae, val_loader, transport_sampler, args, device, ra
         logger: Logger instance
     
     Returns:
-        FID score (float)
+        FID score (float), sample_images (dict or None)
     """
     if compute_fid is None:
         logger.info('FID computation not available. Skipping validation.')
-        return None
+        return None, None
     
     ema_model.eval()
     latent_size = args.image_size // 8
@@ -189,22 +189,33 @@ def validate_fid(ema_model, vae, val_loader, transport_sampler, args, device, ra
     
     generated_images = torch.cat(generated_images_list, dim=0)  # (N, 3, H, W) in [-1, 1]
     
-    # Gather all images across all GPUs
+    # Gather all images and labels across all GPUs
     # Note: Use list-based gather to handle different sizes per rank (when dataset doesn't divide evenly)
     all_real_list = [torch.zeros_like(real_images) for _ in range(dist.get_world_size())]
     all_gen_list = [torch.zeros_like(generated_images) for _ in range(dist.get_world_size())]
+    all_labels_list = [torch.zeros_like(labels) for _ in range(dist.get_world_size())]
     
     dist.all_gather(all_real_list, real_images)
     dist.all_gather(all_gen_list, generated_images.to(device))
+    dist.all_gather(all_labels_list, labels)
     
     # Compute FID only on rank 0
     fid_score = None
+    sample_images = None
     if rank == 0:
         # Concatenate all gathered tensors
         all_real_images = torch.cat(all_real_list, dim=0)
         all_generated_images = torch.cat(all_gen_list, dim=0)
+        all_labels = torch.cat(all_labels_list, dim=0)
         
-        # Convert from [-1, 1] to [0, 1]
+        # Store samples for visualization (keep in [-1, 1] range)
+        sample_images = {
+            'real': all_real_images.cpu(),
+            'generated': all_generated_images.cpu(),
+            'labels': all_labels.cpu()
+        }
+        
+        # Convert from [-1, 1] to [0, 1] for FID computation
         all_real_images = (all_real_images + 1.0) / 2.0
         all_generated_images = (all_generated_images + 1.0) / 2.0
         
@@ -218,7 +229,7 @@ def validate_fid(ema_model, vae, val_loader, transport_sampler, args, device, ra
         logger.info(f'Validation FID Score: {fid_score:.4f}')
     
     dist.barrier()
-    return fid_score
+    return fid_score, sample_images
 
 
 #################################################################################
@@ -468,9 +479,17 @@ def main(args):
                 # Run validation if validation data is provided
                 if val_loader is not None:
                     logger.info("Running validation...")
-                    fid_score = validate_fid(ema, vae, val_loader, transport_sampler, args, device, rank, logger)
+                    fid_score, sample_images = validate_fid(ema, vae, val_loader, transport_sampler, args, device, rank, logger)
                     if rank == 0 and fid_score is not None and args.wandb:
                         wandb_utils.log({"validation/FID": fid_score}, step=train_steps)
+                    if rank == 0 and sample_images is not None and args.wandb:
+                        wandb_utils.log_validation_images(
+                            sample_images['real'], 
+                            sample_images['generated'],
+                            sample_images['labels'],
+                            step=train_steps,
+                            num_samples=args.val_log_images
+                        )
                     model.train()  # Set back to training mode
                     logger.info("Validation done.")
 
@@ -505,6 +524,8 @@ if __name__ == "__main__":
                         help="Path to validation dataset (ImageFolder format). If provided, validation runs at --sample-every intervals")
     parser.add_argument("--val-num-samples", type=int, default=5_000,
                         help="Number of samples to use for validation (randomly sampled from validation set)")
+    parser.add_argument("--val-log-images", type=int, default=16,
+                        help="Number of random validation images to log to wandb")
 
     parse_transport_args(parser)
     args = parser.parse_args()
