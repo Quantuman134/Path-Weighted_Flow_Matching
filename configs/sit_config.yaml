@@ -8,7 +8,7 @@ data:
 # Model Settings
 model:
   model: 'SiT-S/2'  # Model architecture: SiT-XL/2, SiT-L/2, SiT-B/2, etc.
-  image_size: 256  # Image size: 256 or 512
+  image_size: 64  # Image size: 256 or 512
   num_classes: 1000  # Number of classes in the dataset
   vae: 'ema'  # VAE model: 'ema' or 'mse'
 
@@ -32,9 +32,10 @@ logging:
   results_dir: 'results'  # Directory to save results
   log_every: 100  # Log training info every N steps
   ckpt_every: 50000  # Save checkpoint every N steps
-  sample_every: 10000  # Generate samples every N steps
-  wandb: false  # Enable Weights & Biases logging
-  wandb_entity: 'default'  # W&B entity name (can also use env var ENTITY)
+  sample_every: 5000  # Generate samples every N steps
+  wandb: true  # Enable Weights & Biases logging
+  wandb_key: null  # W&B API key (can also use env var WANDB_KEY)
+  wandb_entity: 'TAMU-Visual-AI'  # W&B entity name (can also use env var ENTITY)
   wandb_project: 'SiT'  # W&B project name (can also use env var PROJECT)
   
 # Validation Settings

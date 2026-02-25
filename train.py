@@ -96,6 +96,7 @@ def config_to_args(config):
     args.ckpt_every = int(config['logging']['ckpt_every'])
     args.sample_every = int(config['logging']['sample_every'])
     args.wandb = bool(config['logging'].get('wandb', False))
+    args.wandb_key = config['logging'].get('wandb_key', os.environ.get('WANDB_KEY', None))
     args.wandb_entity = config['logging'].get('wandb_entity', os.environ.get('ENTITY', 'default'))
     args.wandb_project = config['logging'].get('wandb_project', os.environ.get('PROJECT', 'SiT'))
     
@@ -336,7 +337,7 @@ def main(args):
         logger.info(f"Experiment directory created at {experiment_dir}")
 
         if args.wandb:
-            wandb_utils.initialize(args, args.wandb_entity, experiment_name, args.wandb_project)
+            wandb_utils.initialize(args, args.wandb_entity, experiment_name, args.wandb_project, args.wandb_key)
     else:
         logger = create_logger(None)
 
