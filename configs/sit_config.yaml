@@ -2,12 +2,12 @@
 
 # Data Settings
 data:
-  data_path: null  # REQUIRED: Path to training data (ImageFolder format)
-  val_data_path: null  # Optional: Path to validation data (ImageFolder format)
+  data_path: /data/hkzhang/imagenet_raw/train  # REQUIRED: Path to training data (ImageFolder format)
+  val_data_path: /data/hkzhang/imagenet_raw/val  # Optional: Path to validation data (ImageFolder format)
 
 # Model Settings
 model:
-  model: 'SiT-XL/2'  # Model architecture: SiT-XL/2, SiT-L/2, SiT-B/2, etc.
+  model: 'SiT-S/2'  # Model architecture: SiT-XL/2, SiT-L/2, SiT-B/2, etc.
   image_size: 256  # Image size: 256 or 512
   num_classes: 1000  # Number of classes in the dataset
   vae: 'ema'  # VAE model: 'ema' or 'mse'
