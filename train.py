@@ -33,10 +33,14 @@ import wandb_utils
 import sys
 sys.path.append('..')
 try:
-    from FID import compute_fid
+    from ..FID import compute_fid
 except ImportError:
-    print('Warning: FID module not found. Validation will not be available.')
-    compute_fid = None
+    try:
+        # Fallback to direct import if running as script
+        from FID import compute_fid
+    except ImportError:
+        print('Warning: FID module not found. Validation will not be available.')
+        compute_fid = None
 
 
 #################################################################################
@@ -449,7 +453,15 @@ def main(args):
     ema.eval()  # EMA model should always be in eval mode
 
     # Variables for monitoring/logging purposes:
-    train_steps = 0
+    # Resume from checkpoint if available
+    start_epoch = 0
+    if checkpoint_state is not None and "train_steps" in checkpoint_state:
+        train_steps = checkpoint_state["train_steps"]
+        start_epoch = checkpoint_state.get("epoch", 0) + 1  # Start from next epoch
+        logger.info(f"Resuming from step {train_steps}, epoch {start_epoch}")
+    else:
+        train_steps = 0
+    
     log_steps = 0
     running_loss = 0
     start_time = time()
@@ -473,7 +485,7 @@ def main(args):
         model_fn = ema.forward
 
     logger.info(f"Training for {args.epochs} epochs...")
-    for epoch in range(args.epochs):
+    for epoch in range(start_epoch, args.epochs):
         sampler.set_epoch(epoch)
         logger.info(f"Beginning epoch {epoch}...")
         for x, y in loader:
@@ -521,7 +533,9 @@ def main(args):
                         "model": model.module.state_dict(),
                         "ema": ema.state_dict(),
                         "opt": opt.state_dict(),
-                        "args": args
+                        "args": args,
+                        "train_steps": train_steps,
+                        "epoch": epoch
                     }
                     checkpoint_path = f"{checkpoint_dir}/{train_steps:07d}.pt"
                     torch.save(checkpoint, checkpoint_path)

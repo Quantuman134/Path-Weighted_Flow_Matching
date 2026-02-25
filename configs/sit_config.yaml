@@ -23,25 +23,25 @@ transport:
 # Training Settings
 training:
   epochs: 1400  # Number of training epochs
-  global_batch_size: 256  # Total batch size across all GPUs
+  global_batch_size: 2560  # Total batch size across all GPUs
   global_seed: 0  # Random seed for reproducibility
   num_workers: 4  # Number of data loading workers
 
 # Logging Settings
 logging:
   results_dir: 'results'  # Directory to save results
-  log_every: 100  # Log training info every N steps
-  ckpt_every: 50000  # Save checkpoint every N steps
-  sample_every: 5000  # Generate samples every N steps
+  log_every: 10  # Log training info every N steps
+  ckpt_every: 5000  # Save checkpoint every N steps
+  sample_every: 500  # Generate samples every N steps
   wandb: true  # Enable Weights & Biases logging
-  wandb_key: null  # W&B API key (can also use env var WANDB_KEY)
+  wandb_key: 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  # W&B API key (can also use env var WANDB_KEY)
   wandb_entity: 'TAMU-Visual-AI'  # W&B entity name (can also use env var ENTITY)
   wandb_project: 'SiT'  # W&B project name (can also use env var PROJECT)
   
 # Validation Settings
 validation:
   val_num_samples: 5000  # Number of samples to use for validation
-  val_log_images: 16  # Number of validation images to log to wandb
+  val_log_images: 64  # Number of validation images to log to wandb
 
 # Sampling Settings
 sampling:
@@ -49,4 +49,4 @@ sampling:
 
 # Checkpoint Settings
 checkpoint:
-  ckpt: null  # Optional: Path to checkpoint to resume training from
+  ckpt: ./results/006-SiT-S-2-Linear-velocity-None/checkpoints/00050000.pt  # Optional: Path to checkpoint to resume training from
