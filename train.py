@@ -30,13 +30,6 @@ from download import find_model
 from transport import create_transport, Sampler
 from diffusers.models import AutoencoderKL
 import wandb_utils
-import sys
-import os
-
-# Add parent directory to path for FID import
-parent_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-if parent_dir not in sys.path:
-    sys.path.insert(0, parent_dir)
 
 try:
     from FID import compute_fid
@@ -363,7 +356,7 @@ def main(args):
     if args.ckpt is not None:
         ckpt_path = args.ckpt
         assert os.path.isfile(ckpt_path), f'Could not find SiT checkpoint at {ckpt_path}'
-        checkpoint_state = torch.load(ckpt_path, map_location=lambda storage, loc: storage)
+        checkpoint_state = torch.load(ckpt_path, map_location=lambda storage, loc: storage, weights_only=False)
         model.load_state_dict(checkpoint_state["model"])
         ema.load_state_dict(checkpoint_state["ema"])
         # Note: We don't override args from checkpoint to allow config file to control all settings

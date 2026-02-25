@@ -23,7 +23,7 @@ transport:
 # Training Settings
 training:
   epochs: 1400  # Number of training epochs
-  global_batch_size: 2560  # Total batch size across all GPUs
+  global_batch_size: 5120  # Total batch size across all GPUs
   global_seed: 0  # Random seed for reproducibility
   num_workers: 4  # Number of data loading workers
 
