@@ -218,7 +218,7 @@ def validate_fid(ema_model, vae, val_loader, transport_sampler, args, device, ra
     labels = torch.cat(labels_list, dim=0).to(device)  # (N,)
     
     n = real_images.size(0)
-    logger.info(f"Generating {n} samples for FID validation...")
+    logger.info(f"Rank {rank}: Generating {n} samples for FID validation...")
     
     # Generate images with same class labels
     generated_images_list = []
@@ -259,13 +259,29 @@ def validate_fid(ema_model, vae, val_loader, transport_sampler, args, device, ra
     generated_images = torch.cat(generated_images_list, dim=0)  # (N, 3, H, W) in [-1, 1]
     
     # Gather all images and labels across all GPUs
-    # Note: Use list-based gather to handle different sizes per rank (when dataset doesn't divide evenly)
+    # First gather the sizes from all ranks to handle uneven distribution
+    local_size = torch.tensor([n], device=device)
+    all_sizes = [torch.zeros(1, dtype=torch.long, device=device) for _ in range(dist.get_world_size())]
+    dist.all_gather(all_sizes, local_size)
+    all_sizes = [int(s.item()) for s in all_sizes]
+    max_size = max(all_sizes)
+    
+    # Pad tensors to max_size if necessary
+    if n < max_size:
+        pad_size = max_size - n
+        real_images = torch.cat([real_images, torch.zeros(pad_size, *real_images.shape[1:], device=device)], dim=0)
+        generated_images = torch.cat([generated_images.to(device), torch.zeros(pad_size, *generated_images.shape[1:], device=device)], dim=0)
+        labels = torch.cat([labels, torch.zeros(pad_size, dtype=labels.dtype, device=device)], dim=0)
+    else:
+        generated_images = generated_images.to(device)
+    
+    # Now all tensors have the same size across ranks
     all_real_list = [torch.zeros_like(real_images) for _ in range(dist.get_world_size())]
     all_gen_list = [torch.zeros_like(generated_images) for _ in range(dist.get_world_size())]
     all_labels_list = [torch.zeros_like(labels) for _ in range(dist.get_world_size())]
     
     dist.all_gather(all_real_list, real_images)
-    dist.all_gather(all_gen_list, generated_images.to(device))
+    dist.all_gather(all_gen_list, generated_images)
     dist.all_gather(all_labels_list, labels)
     
     # Compute FID only on rank 0
@@ -276,6 +292,14 @@ def validate_fid(ema_model, vae, val_loader, transport_sampler, args, device, ra
         all_real_images = torch.cat(all_real_list, dim=0)
         all_generated_images = torch.cat(all_gen_list, dim=0)
         all_labels = torch.cat(all_labels_list, dim=0)
+        
+        # Remove padding by keeping only the actual samples from each rank
+        total_samples = sum(all_sizes)
+        all_real_images = all_real_images[:total_samples]
+        all_generated_images = all_generated_images[:total_samples]
+        all_labels = all_labels[:total_samples]
+        
+        logger.info(f"Total validation samples gathered from all ranks: {total_samples}")
         
         # Store samples for visualization (keep in [-1, 1] range)
         sample_images = {
@@ -293,8 +317,11 @@ def validate_fid(ema_model, vae, val_loader, transport_sampler, args, device, ra
         all_generated_images = torch.clamp(all_generated_images, 0.0, 1.0)
         
         logger.info('Computing FID score...')
+        # FID computation expects 'cuda' or 'cpu' as device string
+        # device parameter is an int (GPU ID) in distributed training
+        fid_device = 'cuda' if isinstance(device, int) or (hasattr(device, 'type') and device.type == 'cuda') else 'cpu'
         fid_score = compute_fid(all_real_images.cpu(), all_generated_images.cpu(), 
-                               batch_size=32, device=str(device))
+                               batch_size=32, device=fid_device)
         logger.info(f'Validation FID Score: {fid_score:.4f}')
     
     dist.barrier()
@@ -405,7 +432,9 @@ def main(args):
         sampler=sampler,
         num_workers=args.num_workers,
         pin_memory=True,
-        drop_last=True
+        drop_last=True,
+        persistent_workers=True,  # Keep workers alive between epochs
+        prefetch_factor=12  # Prefetch more batches per worker
     )
     logger.info(f"Dataset contains {len(dataset):,} images ({args.data_path})")
 
@@ -439,7 +468,9 @@ def main(args):
             sampler=val_sampler,
             num_workers=args.num_workers,
             pin_memory=True,
-            drop_last=False
+            drop_last=False,
+            persistent_workers=True,
+            prefetch_factor=4
         )
         logger.info(f"Validation dataset contains {len(val_dataset):,} images ({args.val_data_path})")
 

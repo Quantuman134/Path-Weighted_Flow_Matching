@@ -2,6 +2,7 @@
 
 CUDA_VISIBLE_DEVICES=1,2  # Set this to the GPU(s) you want to use (e.g., "0,1" for multiple GPUs)
 export CUDA_VISIBLE_DEVICES=$CUDA_VISIBLE_DEVICES
+export OMP_NUM_THREADS=16  # 256 CPU cores / 2 GPUs = 128, using 16 for good balance
 
 # SiT Training Script
 # Configuration file path
@@ -11,4 +12,4 @@ config_file="./configs/sit_config.yaml"
 NUM_GPUS=2
 
 # Run training with torchrun (PyTorch distributed)
-torchrun --nproc_per_node=$NUM_GPUS train.py --config $config_file
+NCCL_P2P_DISABLE=1 torchrun --nproc_per_node=$NUM_GPUS --master_port=29506 train.py --config $config_file
