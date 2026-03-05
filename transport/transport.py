@@ -16,6 +16,7 @@ class ModelType(enum.Enum):
     NOISE = enum.auto()  # the model predicts epsilon
     SCORE = enum.auto()  # the model predicts \nabla \log p(x)
     VELOCITY = enum.auto()  # the model predicts v(x)
+    TARGET = enum.auto()  # the model predicts x1 (the clean data)
 
 class PathType(enum.Enum):
     """
@@ -143,7 +144,10 @@ class Transport:
         terms['pred'] = model_output
         if self.model_type == ModelType.VELOCITY:
             terms['loss'] = mean_flat(((model_output - ut) ** 2))
-        else: 
+        elif self.model_type == ModelType.TARGET:
+            # model predicts x1 (clean data); loss in x1-space
+            terms['loss'] = mean_flat(((model_output - x1) ** 2))
+        else:
             _, drift_var = self.path_sampler.compute_drift(xt, t)
             sigma_t, _ = self.path_sampler.compute_sigma_t(path.expand_t_like_x(t, xt))
             if self.loss_type in [WeightType.VELOCITY]:
@@ -183,10 +187,20 @@ class Transport:
             model_output = model(x, t, **model_kwargs)
             return model_output
 
+        def target_ode(x, t, model, **model_kwargs):
+            # model predicts x1_hat; convert to implied velocity
+            alpha_t, d_alpha_t = self.path_sampler.compute_alpha_t(path.expand_t_like_x(t, x))
+            sigma_t, d_sigma_t = self.path_sampler.compute_sigma_t(path.expand_t_like_x(t, x))
+            x1_hat = model(x, t, **model_kwargs)
+            x0_hat = (x - alpha_t * x1_hat) / (sigma_t + 1e-8)
+            return d_alpha_t * x1_hat + d_sigma_t * x0_hat
+
         if self.model_type == ModelType.NOISE:
             drift_fn = noise_ode
         elif self.model_type == ModelType.SCORE:
             drift_fn = score_ode
+        elif self.model_type == ModelType.TARGET:
+            drift_fn = target_ode
         else:
             drift_fn = velocity_ode
         
@@ -209,6 +223,15 @@ class Transport:
             score_fn = lambda x, t, model, **kwagrs: model(x, t, **kwagrs)
         elif self.model_type == ModelType.VELOCITY:
             score_fn = lambda x, t, model, **kwargs: self.path_sampler.get_score_from_velocity(model(x, t, **kwargs), x, t)
+        elif self.model_type == ModelType.TARGET:
+            def target_score_fn(x, t, model, **kwargs):
+                # score = -x0_hat / sigma_t, derived from x1 prediction
+                alpha_t, _ = self.path_sampler.compute_alpha_t(path.expand_t_like_x(t, x))
+                sigma_t, _ = self.path_sampler.compute_sigma_t(path.expand_t_like_x(t, x))
+                x1_hat = model(x, t, **kwargs)
+                x0_hat = (x - alpha_t * x1_hat) / (sigma_t + 1e-8)
+                return -x0_hat / (sigma_t + 1e-8)
+            score_fn = target_score_fn
         else:
             raise NotImplementedError()
         
