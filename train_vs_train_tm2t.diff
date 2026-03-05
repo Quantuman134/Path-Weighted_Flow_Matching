@@ -1,0 +1,756 @@
+5c5,17
+< A minimal training script for SiT using PyTorch DDP.
+---
+> Training script for SiT-TM2T: a two-stage generation model.
+> 
+> Architecture:
+>   - Pretrained SiT (frozen): generates from t=0 (noise) to t=m
+>   - TM2T model (trainable): generates from t=m to t=1 (clean image)
+> 
+> Training:
+>   - TM2T is trained with standard flow matching loss, but timesteps
+>     are restricted to [t_min, 1] via Transport(t_min=m).
+> 
+> Inference:
+>   - Stage 1: pretrained SiT ODE from t=0 → t=m
+>   - Stage 2: TM2T ODE from t=m → t=1 using stage 1 output as init
+6a19
+> 
+8d20
+< # the first flag below was False when we tested this script but True makes A100 training a lot faster:
+25a38
+> import math
+46,48d58
+<     """
+<     Load configuration from YAML file.
+<     """
+51,53c61,63
+<     
+<     # Validate required sections
+<     required_sections = ['data', 'model', 'transport', 'training', 'logging', 'validation', 'sampling', 'checkpoint']
+---
+> 
+>     required_sections = ['data', 'model', 'transport', 'tm2t', 'training',
+>                          'logging', 'validation', 'sampling', 'checkpoint']
+57c67
+<     
+---
+> 
+62,64d71
+<     """
+<     Convert config dict to argparse.Namespace for compatibility with existing code.
+<     """
+66,67c73,74
+<     
+<     # Data settings
+---
+> 
+>     # Data
+72,73c79,80
+<     
+<     # Model settings
+---
+> 
+>     # Model
+78,79c85,86
+<     
+<     # Transport settings
+---
+> 
+>     # Transport
+85,86c92,99
+<     
+<     # Training settings
+---
+> 
+>     # TM2T
+>     args.t_min = float(config['tm2t']['t_min'])
+>     args.pretrained_ckpt = config['tm2t']['pretrained_ckpt']
+>     if args.pretrained_ckpt is None:
+>         raise ValueError("tm2t.pretrained_ckpt is required in config file")
+> 
+>     # Training
+91,92c104,105
+<     
+<     # Logging settings
+---
+> 
+>     # Logging
+100,102c113,115
+<     args.wandb_project = config['logging'].get('wandb_project', os.environ.get('PROJECT', 'SiT'))
+<     
+<     # Validation settings
+---
+>     args.wandb_project = config['logging'].get('wandb_project', os.environ.get('PROJECT', 'SiT-TM2T'))
+> 
+>     # Validation
+105,106c118,119
+<     
+<     # Sampling settings
+---
+> 
+>     # Sampling
+108,109c121,123
+<     
+<     # Checkpoint settings
+---
+>     args.num_sampling_steps = int(config['sampling'].get('num_sampling_steps', 250))
+> 
+>     # Checkpoint
+111c125
+<     
+---
+> 
+117,119d130
+<     """
+<     Step the EMA model towards the current model.
+<     """
+122d132
+< 
+124d133
+<         # TODO: Consider applying only to params that require_grad to avoid small numerical changes of pos_embed
+129,131d137
+<     """
+<     Set requires_grad flag for all parameters in a model.
+<     """
+137,139d142
+<     """
+<     End DDP training.
+<     """
+144,147c147
+<     """
+<     Create a logger that writes to a log file and stdout.
+<     """
+<     if dist.get_rank() == 0:  # real logger
+---
+>     if dist.get_rank() == 0:
+155c155
+<     else:  # dummy logger (does nothing)
+---
+>     else:
+162,165d161
+<     """
+<     Center cropping implementation from ADM.
+<     https://github.com/openai/guided-diffusion/blob/8fb3ad9197f16bbc40620447b2742e13458d2831/guided_diffusion/image_datasets.py#L126
+<     """
+170d165
+< 
+175d169
+< 
+183,186c177,192
+< def validate_fid(ema_model, vae, val_loader, transport_sampler, args, device, rank, logger):
+<     """
+<     Compute FID score on validation set.
+<     
+---
+> def two_stage_sample(
+>     pretrained_model,
+>     tm2t_model,
+>     pretrained_sampler,
+>     tm2t_sampler,
+>     z,
+>     model_kwargs,
+>     t_min,
+>     steps_stage1,
+>     steps_stage2,
+> ):
+>     """
+>     Two-stage ODE sampling:
+>       Stage 1: pretrained SiT  t=0      → t=t_min  (noise → mid-point)
+>       Stage 2: TM2T            t=t_min  → t=1       (mid-point → image)
+> 
+188,198c194,243
+<         ema_model: EMA model for generation
+<         vae: VAE for encoding/decoding
+<         val_loader: Validation data loader
+<         transport_sampler: Transport sampler for generation
+<         args: Training arguments
+<         device: Device to run on
+<         rank: DDP rank
+<         logger: Logger instance
+<     
+<     Returns:
+<         FID score (float), sample_images (dict or None)
+---
+>         pretrained_model: frozen pretrained SiT (use .forward or .forward_with_cfg)
+>         tm2t_model: trained TM2T model (EMA preferred)
+>         pretrained_sampler: Sampler wrapping a standard Transport (t_min=0)
+>         tm2t_sampler: Sampler wrapping a Transport with t_min=args.t_min
+>         z: initial Gaussian noise [B, C, H, W]
+>         model_kwargs: dict passed to both models (y, cfg_scale, …)
+>         t_min: the handoff timestep m
+>         steps_stage1: ODE steps for stage 1
+>         steps_stage2: ODE steps for stage 2
+>     """
+>     use_cfg = 'cfg_scale' in model_kwargs and model_kwargs['cfg_scale'] > 1.0
+>     model_fn_pretrained = pretrained_model.forward_with_cfg if use_cfg else pretrained_model.forward
+>     model_fn_tm2t = tm2t_model.forward_with_cfg if use_cfg else tm2t_model.forward
+> 
+>     # Stage 1: noise → x_m
+>     stage1_fn = pretrained_sampler.sample_ode(
+>         num_steps=steps_stage1,
+>         t1_override=t_min,
+>     )
+>     x_m = stage1_fn(z, model_fn_pretrained, **model_kwargs)[-1]
+> 
+>     # Stage 2: x_m → x_1
+>     stage2_fn = tm2t_sampler.sample_ode(
+>         num_steps=steps_stage2,
+>         t0_override=t_min,
+>     )
+>     x_1 = stage2_fn(x_m, model_fn_tm2t, **model_kwargs)[-1]
+> 
+>     return x_1
+> 
+> 
+> @torch.no_grad()
+> def validate_fid_tm2t(
+>     ema_model,
+>     vae,
+>     val_loader,
+>     pretrained_model,
+>     pretrained_sampler,
+>     tm2t_sampler,
+>     args,
+>     device,
+>     rank,
+>     logger,
+>     steps_stage1,
+>     steps_stage2,
+> ):
+>     """
+>     Compute FID score on the validation set using two-stage sampling.
+>     Mirrors validate_fid() from train.py, replacing single-model generation
+>     with two_stage_sample (pretrained SiT t=0→m, TM2T t=m→1).
+203c248
+<     
+---
+> 
+207,208c252
+<     
+<     # Collect validation images and labels
+---
+> 
+211d254
+<     
+215,219c258,260
+<     
+<     # Concatenate and move to device
+<     real_images = torch.cat(real_images_list, dim=0).to(device)  # (N, 3, H, W) in [-1, 1]
+<     labels = torch.cat(labels_list, dim=0).to(device)  # (N,)
+<     
+---
+> 
+>     real_images = torch.cat(real_images_list, dim=0).to(device)
+>     labels = torch.cat(labels_list, dim=0).to(device)
+222,223c263
+<     
+<     # Generate images with same class labels
+---
+> 
+226c266
+<     
+---
+> 
+230,231c270
+<         
+<         # Get labels for this batch
+---
+> 
+233,234d271
+<         
+<         # Create noise
+236,237c273
+<         
+<         # Setup for CFG if needed
+---
+> 
+243d278
+<             model_fn = ema_model.forward_with_cfg
+246,251c281,293
+<             model_fn = ema_model.forward
+<         
+<         # Generate samples
+<         sample_fn = transport_sampler.sample_ode()
+<         samples = sample_fn(zs, model_fn, **sample_model_kwargs)[-1]
+<         
+---
+> 
+>         samples = two_stage_sample(
+>             pretrained_model=pretrained_model,
+>             tm2t_model=ema_model,
+>             pretrained_sampler=pretrained_sampler,
+>             tm2t_sampler=tm2t_sampler,
+>             z=zs,
+>             model_kwargs=sample_model_kwargs,
+>             t_min=args.t_min,
+>             steps_stage1=steps_stage1,
+>             steps_stage2=steps_stage2,
+>         )
+> 
+254,255c296
+<         
+<         # Decode from latent space
+---
+> 
+258,262c299,302
+<     
+<     generated_images = torch.cat(generated_images_list, dim=0)  # (N, 3, H, W) in [-1, 1]
+<     
+<     # Gather all images and labels across all GPUs
+<     # First gather the sizes from all ranks to handle uneven distribution
+---
+> 
+>     generated_images = torch.cat(generated_images_list, dim=0)
+> 
+>     # Gather across GPUs (handles uneven distribution with padding)
+268,269c308
+<     
+<     # Pad tensors to max_size if necessary
+---
+> 
+277,278c316
+<     
+<     # Now all tensors have the same size across ranks
+---
+> 
+282d319
+<     
+286,287c323
+<     
+<     # Compute FID only on rank 0
+---
+> 
+291d326
+<         # Concatenate all gathered tensors
+295,296c330
+<         
+<         # Remove padding by keeping only the actual samples from each rank
+---
+> 
+301d334
+<         
+303,304c336
+<         
+<         # Store samples for visualization (keep in [-1, 1] range)
+---
+> 
+308c340
+<             'labels': all_labels.cpu()
+---
+>             'labels': all_labels.cpu(),
+310,318c342,345
+<         
+<         # Convert from [-1, 1] to [0, 1] for FID computation
+<         all_real_images = (all_real_images + 1.0) / 2.0
+<         all_generated_images = (all_generated_images + 1.0) / 2.0
+<         
+<         # Clamp to [0, 1]
+<         all_real_images = torch.clamp(all_real_images, 0.0, 1.0)
+<         all_generated_images = torch.clamp(all_generated_images, 0.0, 1.0)
+<         
+---
+> 
+>         all_real_images = torch.clamp((all_real_images + 1.0) / 2.0, 0.0, 1.0)
+>         all_generated_images = torch.clamp((all_generated_images + 1.0) / 2.0, 0.0, 1.0)
+> 
+320,321d346
+<         # FID computation expects 'cuda' or 'cpu' as device string
+<         # device parameter is an int (GPU ID) in distributed training
+323,324c348,353
+<         fid_score = compute_fid(all_real_images.cpu(), all_generated_images.cpu(), 
+<                                batch_size=32, device=fid_device)
+---
+>         fid_score = compute_fid(
+>             all_real_images.cpu(),
+>             all_generated_images.cpu(),
+>             batch_size=32,
+>             device=fid_device,
+>         )
+326c355
+<     
+---
+> 
+336,338d364
+<     """
+<     Trains a new SiT model.
+<     """
+341c367
+<     # Setup DDP:
+---
+>     # Setup DDP
+343c369
+<     assert args.global_batch_size % dist.get_world_size() == 0, f"Batch size must be divisible by world size."
+---
+>     assert args.global_batch_size % dist.get_world_size() == 0
+352c378
+<     # Setup an experiment folder:
+---
+>     # Setup experiment folder
+354c380
+<         os.makedirs(args.results_dir, exist_ok=True)  # Make results folder (holds all experiment subfolders)
+---
+>         os.makedirs(args.results_dir, exist_ok=True)
+356,360c382,388
+<         model_string_name = args.model.replace("/", "-")  # e.g., SiT-XL/2 --> SiT-XL-2 (for naming folders)
+<         experiment_name = f"{experiment_index:03d}-{model_string_name}-" \
+<                         f"{args.path_type}-{args.prediction}-{args.loss_weight}"
+<         experiment_dir = f"{args.results_dir}/{experiment_name}"  # Create an experiment folder
+<         checkpoint_dir = f"{experiment_dir}/checkpoints"  # Stores saved model checkpoints
+---
+>         model_string_name = args.model.replace("/", "-")
+>         experiment_name = (
+>             f"{experiment_index:03d}-TM2T-{model_string_name}-"
+>             f"{args.path_type}-{args.prediction}-tmin{args.t_min}"
+>         )
+>         experiment_dir = f"{args.results_dir}/{experiment_name}"
+>         checkpoint_dir = f"{experiment_dir}/checkpoints"
+363a392
+>         logger.info(f"TM2T t_min={args.t_min}  (pretrained handles [0, {args.t_min}], TM2T handles [{args.t_min}, 1])")
+370,371c399
+<     # Create model:
+<     assert args.image_size % 8 == 0, "Image size must be divisible by 8 (for the VAE encoder)."
+---
+>     assert args.image_size % 8 == 0
+373c401,405
+<     model = SiT_models[args.model](
+---
+> 
+>     # -------------------------------------------------------------------------
+>     # Pretrained SiT (frozen) — used only during inference
+>     # -------------------------------------------------------------------------
+>     pretrained_model = SiT_models[args.model](
+375c407,426
+<         num_classes=args.num_classes
+---
+>         num_classes=args.num_classes,
+>     ).to(device)
+>     assert os.path.isfile(args.pretrained_ckpt), \
+>         f"Pretrained checkpoint not found: {args.pretrained_ckpt}"
+>     pretrained_state = torch.load(
+>         args.pretrained_ckpt, map_location=lambda storage, loc: storage, weights_only=False
+>     )
+>     pretrained_model.load_state_dict(pretrained_state["ema"])
+>     pretrained_model.eval()
+>     requires_grad(pretrained_model, False)
+>     logger.info(f"Loaded pretrained SiT from {args.pretrained_ckpt}")
+> 
+>     # Sampler for pretrained model (full [0, 1] interval; t1_override=t_min at inference)
+>     pretrained_transport = create_transport(
+>         args.path_type,
+>         args.prediction,
+>         args.loss_weight,
+>         args.train_eps,
+>         args.sample_eps,
+>         t_min=0.0,
+376a428
+>     pretrained_sampler = Sampler(pretrained_transport)
+378,379c430,437
+<     # Note that parameter initialization is done within the SiT constructor
+<     ema = deepcopy(model).to(device)  # Create an EMA of the model for use after training
+---
+>     # -------------------------------------------------------------------------
+>     # TM2T model (trainable)
+>     # -------------------------------------------------------------------------
+>     tm2t_model = SiT_models[args.model](
+>         input_size=latent_size,
+>         num_classes=args.num_classes,
+>     )
+>     ema = deepcopy(tm2t_model).to(device)
+381c439
+<     # Load checkpoint if provided (before DDP wrapping)
+---
+>     # Resume TM2T from checkpoint if provided
+384,387c442,446
+<         ckpt_path = args.ckpt
+<         assert os.path.isfile(ckpt_path), f'Could not find SiT checkpoint at {ckpt_path}'
+<         checkpoint_state = torch.load(ckpt_path, map_location=lambda storage, loc: storage, weights_only=False)
+<         model.load_state_dict(checkpoint_state["model"])
+---
+>         assert os.path.isfile(args.ckpt), f"TM2T checkpoint not found: {args.ckpt}"
+>         checkpoint_state = torch.load(
+>             args.ckpt, map_location=lambda storage, loc: storage, weights_only=False
+>         )
+>         tm2t_model.load_state_dict(checkpoint_state["model"])
+389,390d447
+<         # Note: We don't override args from checkpoint to allow config file to control all settings
+<         # The model weights and EMA weights are loaded, which is what's needed to resume training
+393,395c450,453
+<     
+<     model = DDP(model.to(device), device_ids=[device])
+<     transport = create_transport(
+---
+>     tm2t_model = DDP(tm2t_model.to(device), device_ids=[device])
+> 
+>     # Transport for TM2T: restricts training timesteps to [t_min, 1]
+>     tm2t_transport = create_transport(
+400,402c458,462
+<         args.sample_eps
+<     )  # default: velocity; 
+<     transport_sampler = Sampler(transport)
+---
+>         args.sample_eps,
+>         t_min=args.t_min,
+>     )
+>     tm2t_sampler = Sampler(tm2t_transport)
+> 
+404c464
+<     logger.info(f"SiT Parameters: {sum(p.numel() for p in model.parameters()):,}")
+---
+>     logger.info(f"TM2T Parameters: {sum(p.numel() for p in tm2t_model.parameters()):,}")
+406,409c466
+<     # Setup optimizer (we used default Adam betas=(0.9, 0.999) and a constant learning rate of 1e-4 in our paper):
+<     opt = torch.optim.AdamW(model.parameters(), lr=1e-4, weight_decay=0)
+<     
+<     # Load optimizer state if resuming from checkpoint
+---
+>     opt = torch.optim.AdamW(tm2t_model.parameters(), lr=1e-4, weight_decay=0)
+413c470,472
+<     # Setup data:
+---
+>     # -------------------------------------------------------------------------
+>     # Data
+>     # -------------------------------------------------------------------------
+422,425c481,484
+<         dataset,
+<         num_replicas=dist.get_world_size(),
+<         rank=rank,
+<         shuffle=True,
+---
+>         dataset, 
+>         num_replicas=dist.get_world_size(), 
+>         rank=rank, 
+>         shuffle=True, 
+429,431c488,490
+<         dataset,
+<         batch_size=local_batch_size,
+<         shuffle=False,
+---
+>         dataset, 
+>         batch_size=local_batch_size, 
+>         shuffle=False, 
+433,434c492,493
+<         num_workers=args.num_workers,
+<         pin_memory=True,
+---
+>         num_workers=args.num_workers, 
+>         pin_memory=True, 
+436,437c495,496
+<         persistent_workers=True,  # Keep workers alive between epochs
+<         prefetch_factor=12  # Prefetch more batches per worker
+---
+>         persistent_workers=True, 
+>         prefetch_factor=12,
+441d499
+<     # Setup validation data if provided:
+450,451d507
+<         
+<         # Randomly sample val_num_samples from validation set
+455,456d510
+<         
+<         # Use DistributedSampler for validation as well
+462c516
+<             seed=args.global_seed
+---
+>             seed=args.global_seed,
+473c527
+<             prefetch_factor=4
+---
+>             prefetch_factor=4,
+477,480c531,554
+<     # Prepare models for training:
+<     update_ema(ema, model.module, decay=0)  # Ensure EMA is initialized with synced weights
+<     model.train()  # important! This enables embedding dropout for classifier-free guidance
+<     ema.eval()  # EMA model should always be in eval mode
+---
+>     # -------------------------------------------------------------------------
+>     # Prepare for training
+>     # -------------------------------------------------------------------------
+>     if checkpoint_state is None:
+>         # Fresh training: sync EMA to model's initial weights
+>         update_ema(ema, tm2t_model.module, decay=0)
+>     tm2t_model.train()
+>     ema.eval()
+> 
+>     # Split sampling steps proportionally between the two stages
+>     steps_stage1 = max(1, round(args.num_sampling_steps * args.t_min))
+>     steps_stage2 = max(1, args.num_sampling_steps - steps_stage1)
+> 
+>     # Fixed noise/labels for periodic visualisation
+>     use_cfg = args.cfg_scale > 1.0
+>     vis_ys = torch.randint(1000, size=(local_batch_size,), device=device)
+>     vis_zs = torch.randn(local_batch_size, 4, latent_size, latent_size, device=device)
+>     if use_cfg:
+>         vis_zs = torch.cat([vis_zs, vis_zs], 0)
+>         y_null = torch.tensor([1000] * local_batch_size, device=device)
+>         vis_ys = torch.cat([vis_ys, y_null], 0)
+>         vis_model_kwargs = dict(y=vis_ys, cfg_scale=args.cfg_scale)
+>     else:
+>         vis_model_kwargs = dict(y=vis_ys)
+482,483d555
+<     # Variables for monitoring/logging purposes:
+<     # Resume from checkpoint if available
+487c559
+<         start_epoch = checkpoint_state.get("epoch", 0) + 1  # Start from next epoch
+---
+>         start_epoch = checkpoint_state.get("epoch", 0) + 1
+491c563
+<     
+---
+> 
+496,513d567
+<     # Labels to condition the model with (feel free to change):
+<     ys = torch.randint(1000, size=(local_batch_size,), device=device)
+<     use_cfg = args.cfg_scale > 1.0
+<     # Create sampling noise:
+<     n = ys.size(0)
+<     zs = torch.randn(n, 4, latent_size, latent_size, device=device)
+< 
+<     # Setup classifier-free guidance:
+<     if use_cfg:
+<         zs = torch.cat([zs, zs], 0)
+<         y_null = torch.tensor([1000] * n, device=device)
+<         ys = torch.cat([ys, y_null], 0)
+<         sample_model_kwargs = dict(y=ys, cfg_scale=args.cfg_scale)
+<         model_fn = ema.forward_with_cfg
+<     else:
+<         sample_model_kwargs = dict(y=ys)
+<         model_fn = ema.forward
+< 
+514a569,571
+>     logger.info(f"  Stage 1 steps (pretrained, t=0→{args.t_min}): {steps_stage1}")
+>     logger.info(f"  Stage 2 steps (TM2T,       t={args.t_min}→1): {steps_stage2}")
+> 
+517a575
+> 
+522d579
+<                 # Map input images to latent space + normalize latents:
+523a581
+> 
+525c583,584
+<             loss_dict = transport.training_losses(model, x, model_kwargs)
+---
+>             # TM2T training loss: identical to SiT FM loss, but t ~ U[t_min, 1]
+>             loss_dict = tm2t_transport.training_losses(tm2t_model, x, model_kwargs)
+530c589
+<             update_ema(ema, model.module)
+---
+>             update_ema(ema, tm2t_model.module)
+532d590
+<             # Log loss values:
+535a594
+> 
+537d595
+<                 # Measure training speed:
+541d598
+<                 # Reduce loss history over all processes:
+545c602,605
+<                 logger.info(f"(step={train_steps:07d}) Train Loss: {avg_loss:.4f}, Train Steps/Sec: {steps_per_sec:.2f}")
+---
+>                 logger.info(
+>                     f"(step={train_steps:07d}) Train Loss: {avg_loss:.4f}, "
+>                     f"Train Steps/Sec: {steps_per_sec:.2f}"
+>                 )
+548,549c608,609
+<                         { "train loss": avg_loss, "train steps/sec": steps_per_sec },
+<                         step=train_steps
+---
+>                         {"train loss": avg_loss, "train steps/sec": steps_per_sec},
+>                         step=train_steps,
+551d610
+<                 # Reset monitoring variables:
+556d614
+<             # Save SiT checkpoint:
+560c618
+<                         "model": model.module.state_dict(),
+---
+>                         "model": tm2t_model.module.state_dict(),
+565c623
+<                         "epoch": epoch
+---
+>                         "epoch": epoch,
+571c629
+<             
+---
+> 
+573c631
+<                 logger.info("Generating EMA samples...")
+---
+>                 logger.info("Generating two-stage EMA samples...")
+575,576c633,643
+<                     sample_fn = transport_sampler.sample_ode() # default to ode sampling
+<                     samples = sample_fn(zs, model_fn, **sample_model_kwargs)[-1]
+---
+>                     samples = two_stage_sample(
+>                         pretrained_model=pretrained_model,
+>                         tm2t_model=ema,
+>                         pretrained_sampler=pretrained_sampler,
+>                         tm2t_sampler=tm2t_sampler,
+>                         z=vis_zs,
+>                         model_kwargs=vis_model_kwargs,
+>                         t_min=args.t_min,
+>                         steps_stage1=steps_stage1,
+>                         steps_stage2=steps_stage2,
+>                     )
+578,579c645
+< 
+<                     if use_cfg: #remove null samples
+---
+>                     if use_cfg:
+582c648,650
+<                     out_samples = torch.zeros((args.global_batch_size, 3, args.image_size, args.image_size), device=device)
+---
+>                     out_samples = torch.zeros(
+>                         (args.global_batch_size, 3, args.image_size, args.image_size), device=device
+>                     )
+587,589c655,656
+<                 logger.info("Generating EMA samples done.")
+<                 
+<                 # Run validation if validation data is provided
+---
+>                 logger.info("Generating two-stage EMA samples done.")
+> 
+592c659,672
+<                     fid_score, sample_images = validate_fid(ema, vae, val_loader, transport_sampler, args, device, rank, logger)
+---
+>                     fid_score, sample_images = validate_fid_tm2t(
+>                         ema_model=ema,
+>                         vae=vae,
+>                         val_loader=val_loader,
+>                         pretrained_model=pretrained_model,
+>                         pretrained_sampler=pretrained_sampler,
+>                         tm2t_sampler=tm2t_sampler,
+>                         args=args,
+>                         device=device,
+>                         rank=rank,
+>                         logger=logger,
+>                         steps_stage1=steps_stage1,
+>                         steps_stage2=steps_stage2,
+>                     )
+597c677
+<                             sample_images['real'], 
+---
+>                             sample_images['real'],
+601c681
+<                             num_samples=args.val_log_images
+---
+>                             num_samples=args.val_log_images,
+603d682
+<                     model.train()  # Set back to training mode
+606,608c685
+<     model.eval()  # important! This disables randomized embedding dropout
+<     # do any sampling/FID calculation/etc. with ema (or model) in eval mode ...
+< 
+---
+>     tm2t_model.eval()
+614c691
+<     parser = argparse.ArgumentParser(description="SiT Training with YAML configuration")
+---
+>     parser = argparse.ArgumentParser(description="TM2T Training with YAML configuration")
+617d693
+<     
+619,620d694
+<     
+<     # Load config file and convert to args
+623d696
+<     

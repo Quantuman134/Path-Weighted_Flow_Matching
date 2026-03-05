@@ -1,4 +1,4 @@
-# Configuration for SiT Training
+# Configuration for TM2T (Two-stage: pretrained SiT + TM2T) Training
 
 # Data Settings
 data:
@@ -7,12 +7,12 @@ data:
 
 # Model Settings
 model:
-  model: 'SiT-XL/2'  # Model architecture: SiT-XL/2, SiT-L/2, SiT-B/2, etc.
-  image_size: 256  # Image size: 256 or 512
+  model: 'SiT-XL/2'  # Architecture for TM2T (should match pretrained model)
+  image_size: 64  # Image size: 256 or 512
   num_classes: 1000  # Number of classes in the dataset
   vae: 'ema'  # VAE model: 'ema' or 'mse'
 
-# Transport Settings
+# Transport Settings (shared by both models)
 transport:
   path_type: 'Linear'  # Path type: 'Linear', 'GVP', or 'VP'
   prediction: 'velocity'  # Prediction type: 'velocity', 'score', or 'noise'
@@ -20,24 +20,29 @@ transport:
   sample_eps: null  # Optional: Sampling epsilon (float)
   train_eps: null  # Optional: Training epsilon (float)
 
+# TM2T-specific Settings
+tm2t:
+  t_min: 0.5  # The 'm' parameter: TM2T handles t in [t_min, 1]; pretrained SiT handles [0, t_min]
+  pretrained_ckpt: null  # REQUIRED: Path to pretrained frozen SiT checkpoint
+
 # Training Settings
 training:
   epochs: 1400  # Number of training epochs
-  global_batch_size: 128  # Total batch size across all GPUs
+  global_batch_size: 256  # Total batch size across all GPUs
   global_seed: 0  # Random seed for reproducibility
-  num_workers: 20  # Number of data loading workers (increased for better GPU utilization)
+  num_workers: 20  # Number of data loading workers
 
 # Logging Settings
 logging:
-  results_dir: 'results'  # Directory to save results
-  log_every: 10  # Log training info every N steps
-  ckpt_every: 5000  # Save checkpoint every N steps
-  sample_every: 2500  # Generate samples every N steps
+  results_dir: 'results_tm2t'  # Directory to save results
+  log_every: 100  # Log training info every N steps
+  ckpt_every: 50000  # Save checkpoint every N steps
+  sample_every: 5000  # Generate samples every N steps
   wandb: true  # Enable Weights & Biases logging
-  wandb_key: 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  # W&B API key (can also use env var WANDB_KEY)
-  wandb_entity: 'TAMU-Visual-AI'  # W&B entity name (can also use env var ENTITY)
-  wandb_project: 'SiT'  # W&B project name (can also use env var PROJECT)
-  
+  wandb_key: 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
+  wandb_entity: 'TAMU-Visual-AI'
+  wandb_project: 'SiT'
+
 # Validation Settings
 validation:
   val_num_samples: 5000  # Number of samples to use for validation
@@ -46,7 +51,8 @@ validation:
 # Sampling Settings
 sampling:
   cfg_scale: 4.0  # Classifier-free guidance scale
+  num_sampling_steps: 250  # ODE steps split proportionally between stage 1 and stage 2
 
 # Checkpoint Settings
 checkpoint:
-  ckpt: null  # Optional: Path to checkpoint to resume training from
+  ckpt: null  # Optional: Path to TM2T checkpoint to resume training from

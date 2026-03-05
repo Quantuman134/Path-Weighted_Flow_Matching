@@ -46,6 +46,7 @@ class Transport:
         loss_type,
         train_eps,
         sample_eps,
+        t_min=0.0,
     ):
         path_options = {
             PathType.LINEAR: path.ICPlan,
@@ -58,6 +59,8 @@ class Transport:
         self.path_sampler = path_options[path_type]()
         self.train_eps = train_eps
         self.sample_eps = sample_eps
+        # t_min: restrict training/sampling to [t_min, 1]; used by TM2T where t_min = m
+        self.t_min = t_min
 
     def prior_logp(self, z):
         '''
@@ -105,10 +108,12 @@ class Transport:
           Args:
             x1 - data point; [batch, *dim]
         """
-        
+
         x0 = th.randn_like(x1)
         t0, t1 = self.check_interval(self.train_eps, self.sample_eps)
-        t = th.rand((x1.shape[0],)) * (t1 - t0) + t0
+        # Clamp lower bound by t_min so TM2T only trains on [t_min, 1]
+        effective_t0 = max(t0, self.t_min)
+        t = th.rand((x1.shape[0],)) * (t1 - effective_t0) + effective_t0
         t = t.to(x1)
         return t, x0, x1
     
@@ -346,16 +351,22 @@ class Sampler:
         atol=1e-6,
         rtol=1e-3,
         reverse=False,
+        t0_override=None,
+        t1_override=None,
     ):
         """returns a sampling function with given ODE settings
         Args:
         - sampling_method: type of sampler used in solving the ODE; default to be Dopri5
-        - num_steps: 
+        - num_steps:
             - fixed solver (Euler, Heun): the actual number of integration steps performed
             - adaptive solver (Dopri5): the number of datapoints saved during integration; produced by interpolation
         - atol: absolute error tolerance for the solver
         - rtol: relative error tolerance for the solver
         - reverse: whether solving the ODE in reverse (data to noise); default to False
+        - t0_override: if set, use this as the ODE start time instead of check_interval result
+        - t1_override: if set, use this as the ODE end time instead of check_interval result
+          (used by TM2T: pretrained model runs t0→m via t1_override=m,
+                         TM2T model runs m→1 via t0_override=m)
         """
         drift = self.drift
 
@@ -368,6 +379,11 @@ class Sampler:
             last_step_size=0.0,
         )
 
+        if t0_override is not None:
+            t0 = t0_override
+        if t1_override is not None:
+            t1 = t1_override
+
         _ode = ode(
             drift=drift,
             t0=t0,
@@ -377,7 +393,7 @@ class Sampler:
             atol=atol,
             rtol=rtol,
         )
-        
+
         return _ode.sample
 
     def sample_ode_likelihood(
