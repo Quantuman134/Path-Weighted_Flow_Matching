@@ -23,7 +23,7 @@ transport:
 # Training Settings
 training:
   epochs: 1400  # Number of training epochs
-  global_batch_size: 128  # Total batch size across all GPUs
+  global_batch_size: 64  # Total batch size across all GPUs
   global_seed: 0  # Random seed for reproducibility
   num_workers: 20  # Number of data loading workers (increased for better GPU utilization)
 
@@ -31,7 +31,7 @@ training:
 logging:
   results_dir: 'results'  # Directory to save results
   log_every: 10  # Log training info every N steps
-  ckpt_every: 5000  # Save checkpoint every N steps
+  ckpt_every: 10000  # Save checkpoint every N steps
   sample_every: 2500  # Generate samples every N steps
   wandb: true  # Enable Weights & Biases logging
   wandb_key: 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  # W&B API key (can also use env var WANDB_KEY)
@@ -49,4 +49,4 @@ sampling:
 
 # Checkpoint Settings
 checkpoint:
-  ckpt: null  # Optional: Path to checkpoint to resume training from
+  ckpt: './results/008-SiT-XL-2-Linear-velocity-None/checkpoints/0335000.pt'  # Optional: Path to checkpoint to resume training from
