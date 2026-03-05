@@ -45,9 +45,10 @@ def main(args):
     pretrained_model.eval()
     print(f"Loaded pretrained SiT from {args.pretrained_ckpt}")
 
+    pretrained_prediction = args.pretrained_prediction or args.prediction
     pretrained_transport = create_transport(
         args.path_type,
-        args.prediction,
+        pretrained_prediction,
         args.loss_weight,
         args.train_eps,
         args.sample_eps,
@@ -173,6 +174,10 @@ if __name__ == "__main__":
     parser.add_argument("--output", type=str, default="sample_tm2t.png")
 
     parse_transport_args(parser)
+    parser.add_argument("--pretrained-prediction", type=str, default=None,
+                        choices=["velocity", "score", "noise", "target"],
+                        help="Prediction type for the pretrained stage-1 model. "
+                             "Defaults to --prediction if not set.")
 
     args = parser.parse_args()
     main(args)

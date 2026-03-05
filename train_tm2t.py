@@ -86,6 +86,7 @@ def config_to_args(config):
     # Transport
     args.path_type = config['transport']['path_type']
     args.prediction = config['transport']['prediction']
+    args.pretrained_prediction = config['transport'].get('pretrained_prediction', args.prediction)
     args.loss_weight = config['transport'].get('loss_weight', None)
     args.sample_eps = config['transport'].get('sample_eps', None)
     args.train_eps = config['transport'].get('train_eps', None)
@@ -419,7 +420,7 @@ def main(args):
     # Sampler for pretrained model (full [0, 1] interval; t1_override=t_min at inference)
     pretrained_transport = create_transport(
         args.path_type,
-        args.prediction,
+        args.pretrained_prediction,
         args.loss_weight,
         args.train_eps,
         args.sample_eps,
