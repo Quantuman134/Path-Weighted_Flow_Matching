@@ -12,4 +12,5 @@ config_file="./configs/tm2t_config.yaml"
 NUM_GPUS=1
 
 # Run training with torchrun (PyTorch distributed)
-NCCL_P2P_DISABLE=1 torchrun --nproc_per_node=$NUM_GPUS train_tm2t.py --config $config_file
+MASTER_PORT=$(python -c "import socket; s=socket.socket(); s.bind(('',0)); print(s.getsockname()[1]); s.close()")
+NCCL_P2P_DISABLE=1 torchrun --master_port=$MASTER_PORT --nproc_per_node=$NUM_GPUS train_tm2t.py --config $config_file

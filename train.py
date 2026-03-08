@@ -475,7 +475,8 @@ def main(args):
         logger.info(f"Validation dataset contains {len(val_dataset):,} images ({args.val_data_path})")
 
     # Prepare models for training:
-    update_ema(ema, model.module, decay=0)  # Ensure EMA is initialized with synced weights
+    if checkpoint_state is None:
+        update_ema(ema, model.module, decay=0)  # Ensure EMA is initialized with synced weights
     model.train()  # important! This enables embedding dropout for classifier-free guidance
     ema.eval()  # EMA model should always be in eval mode
 

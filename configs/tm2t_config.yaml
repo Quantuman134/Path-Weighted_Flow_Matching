@@ -15,8 +15,8 @@ model:
 # Transport Settings (shared by both models)
 transport:
   path_type: 'Linear'  # Path type: 'Linear', 'GVP', or 'VP'
-  prediction: 'score'  # TM2T model prediction type: 'velocity', 'score', 'noise', or 'target'
-  pretrained_prediction: 'score'  # Pretrained SiT prediction type (must match its checkpoint); defaults to 'prediction' if omitted
+  prediction: 'target'  # TM2T model prediction type: 'velocity', 'score', 'noise', or 'target'
+  pretrained_prediction: 'velocity'  # Pretrained SiT prediction type (must match its checkpoint); defaults to 'prediction' if omitted
   loss_weight: null  # Loss weight: null, 'velocity', or 'likelihood'
   sample_eps: null  # Optional: Sampling epsilon (float)
   train_eps: null  # Optional: Training epsilon (float)

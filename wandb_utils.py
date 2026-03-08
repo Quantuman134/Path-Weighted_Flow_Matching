@@ -35,8 +35,8 @@ def initialize(args, entity, exp_name, project_name, wandb_key=None):
         project=project_name,
         name=exp_name,
         config=config_dict,
-        id=generate_run_id(exp_name),
-        resume="allow",
+        # id=generate_run_id(exp_name),
+        # resume="allow",
     )
 
 
