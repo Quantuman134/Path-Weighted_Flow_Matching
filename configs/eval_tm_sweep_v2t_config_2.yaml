@@ -13,7 +13,7 @@
 
 # ── Experiment ────────────────────────────────────────────────────────────────
 experiment:
-  name: "tm_sweep_velocity_target_temp"
+  name: "tm_sweep_velocity_target_XL_2"
   results_base_dir: "./experiment"   # creates ./experiment/tm_sweep_exp1/
 
 # ── VAE (shared by both models) ───────────────────────────────────────────────
@@ -21,12 +21,12 @@ vae: 'ema'   # 'ema' or 'mse'
 
 # ── Model 1: early stage (t = 0 → tm) ────────────────────────────────────────
 model1:
-  ckpt: './results/016-SiT-S-2-Linear-target-None/checkpoints/0130000.pt'          # REQUIRED
+  ckpt: './results/010-SiT-XL-2-Linear-velocity-None/checkpoints/0280000.pt'           # REQUIRED
   use_ema: true                        # true → load state["ema"], false → state["model"]
-  model: 'SiT-S/2'                   # architecture: SiT-XL/2, SiT-L/2, SiT-B/2, SiT-S/2
+  model: 'SiT-XL/2'                   # architecture: SiT-XL/2, SiT-L/2, SiT-B/2, SiT-S/2
   image_size: 64                      # 256 or 512
   num_classes: 1000
-  prediction: 'target'              # prediction type this model was trained with
+  prediction: 'velocity'              # prediction type this model was trained with
   path_type: 'Linear'                 # 'Linear', 'GVP', or 'VP'
   loss_weight: null
   sample_eps: null
@@ -34,12 +34,12 @@ model1:
 
 # ── Model 2: late stage (tm → t = 1) ─────────────────────────────────────────
 model2:
-  ckpt: './results/SiT-S-2_64_velocity_pretrained/checkpoints/0390000.pt'          # REQUIRED
+  ckpt: './results/012-SiT-XL-2-Linear-target-None/checkpoints/0190000.pt'          # REQUIRED
   use_ema: true
-  model: 'SiT-S/2'
+  model: 'SiT-XL/2'
   image_size: 64
   num_classes: 1000
-  prediction: 'velocity'               # can differ from model1
+  prediction: 'target'               # can differ from model1
   path_type: 'Linear'
   loss_weight: null
   sample_eps: null
@@ -49,11 +49,11 @@ model2:
 eval:
   # List of handoff timesteps to evaluate.
   # tm=0.0 → only model2; tm=1.0 → only model1; otherwise two-stage.
-  tm_list: [0.0, 1.0]
+  tm_list: [0.0, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 1.0]
   num_images: 50000       # generated images per tm (balanced across all classes)
   grid_samples: 256       # images saved in the summary grid (square: nrow = sqrt(grid_samples))
   batch_size: 2560
-  seed: 85663
+  seed: 4343787
 
 # ── ImageNet reference images for FID ────────────────────────────────────────
 data:
@@ -69,4 +69,4 @@ sampling:
   rtol: 1.0e-3
 
 # ── Device ────────────────────────────────────────────────────────────────────
-device: 'cuda:1'   # can also be overridden with --device flag
+device: 'cuda:3'   # can also be overridden with --device flag

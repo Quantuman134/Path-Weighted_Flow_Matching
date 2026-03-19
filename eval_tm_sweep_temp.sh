@@ -1,0 +1,1 @@
+python eval_tm_sweep.py --config ./configs/eval_tm_sweep_config.yaml
