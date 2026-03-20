@@ -24,7 +24,7 @@ transport:
 training:
   epochs: 3000  # Number of training epochs
   global_batch_size: 2560  # Total batch size across all GPUs
-  global_seed: 23  # Random seed for reproducibility
+  global_seed: 483  # Random seed for reproducibility
   num_workers: 20  # Number of data loading workers (increased for better GPU utilization)
 
 # Logging Settings
@@ -49,6 +49,6 @@ sampling:
 
 # Checkpoint Settings
 checkpoint:
-  ckpt: ./results/015-SiT-S-2-Linear-velocity-None/checkpoints/0680000.pt  # Optional: Path to checkpoint to resume training from
+  ckpt: ./results/027-SiT-S-2-Linear-velocity-None/checkpoints/0640000.pt  # Optional: Path to checkpoint to resume training from
   
   # ckpt: null  # Optional: Path to checkpoint to resume training from
