@@ -18,6 +18,7 @@ transport:
   prediction: 'target'  # TM2T model prediction type: 'velocity', 'score', 'noise', or 'target'
   pretrained_prediction: 'velocity'  # Pretrained SiT prediction type (must match its checkpoint); defaults to 'prediction' if omitted
   loss_weight: null  # Loss weight: null, 'velocity', or 'likelihood'
+  loss_space: null  # Loss space: null=default (matches prediction type), 'velocity', or 'target'
   sample_eps: null  # Optional: Sampling epsilon (float)
   train_eps: null  # Optional: Training epsilon (float)
 

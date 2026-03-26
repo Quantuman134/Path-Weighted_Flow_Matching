@@ -1,9 +1,10 @@
-from .transport import Transport, ModelType, WeightType, PathType, Sampler
+from .transport import Transport, ModelType, WeightType, LossSpace, PathType, Sampler
 
 def create_transport(
     path_type='Linear',
     prediction="velocity",
     loss_weight=None,
+    loss_space=None,
     train_eps=None,
     sample_eps=None,
     t_min=0.0,
@@ -36,6 +37,14 @@ def create_transport(
     else:
         loss_type = WeightType.NONE
 
+    if loss_space == "velocity":
+        loss_space_type = LossSpace.VELOCITY
+    elif loss_space == "target":
+        loss_space_type = LossSpace.TARGET
+    else:
+        # default: match model type
+        loss_space_type = LossSpace.TARGET if model_type == ModelType.TARGET else LossSpace.VELOCITY
+
     path_choice = {
         "Linear": PathType.LINEAR,
         "GVP": PathType.GVP,
@@ -61,6 +70,7 @@ def create_transport(
         model_type=model_type,
         path_type=path_type,
         loss_type=loss_type,
+        loss_space=loss_space_type,
         train_eps=train_eps,
         sample_eps=sample_eps,
         t_min=t_min,

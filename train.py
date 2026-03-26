@@ -80,6 +80,7 @@ def config_to_args(config):
     args.path_type = config['transport']['path_type']
     args.prediction = config['transport']['prediction']
     args.loss_weight = config['transport'].get('loss_weight', None)
+    args.loss_space = config['transport'].get('loss_space', None)
     args.sample_eps = config['transport'].get('sample_eps', None)
     args.train_eps = config['transport'].get('train_eps', None)
     
@@ -355,7 +356,7 @@ def main(args):
         experiment_index = len(glob(f"{args.results_dir}/*"))
         model_string_name = args.model.replace("/", "-")  # e.g., SiT-XL/2 --> SiT-XL-2 (for naming folders)
         experiment_name = f"{experiment_index:03d}-{model_string_name}-" \
-                        f"{args.path_type}-{args.prediction}-{args.loss_weight}"
+                        f"{args.path_type}-{args.prediction}-{args.loss_weight}-{args.loss_space}"
         experiment_dir = f"{args.results_dir}/{experiment_name}"  # Create an experiment folder
         checkpoint_dir = f"{experiment_dir}/checkpoints"  # Stores saved model checkpoints
         os.makedirs(checkpoint_dir, exist_ok=True)
@@ -396,9 +397,10 @@ def main(args):
         args.path_type,
         args.prediction,
         args.loss_weight,
+        args.loss_space,
         args.train_eps,
         args.sample_eps
-    )  # default: velocity; 
+    )  # default: velocity;
     transport_sampler = Sampler(transport)
     vae = AutoencoderKL.from_pretrained(f"stabilityai/sd-vae-ft-{args.vae}").to(device)
     logger.info(f"SiT Parameters: {sum(p.numel() for p in model.parameters()):,}")

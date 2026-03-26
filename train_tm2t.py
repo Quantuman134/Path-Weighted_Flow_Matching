@@ -88,6 +88,7 @@ def config_to_args(config):
     args.prediction = config['transport']['prediction']
     args.pretrained_prediction = config['transport'].get('pretrained_prediction', args.prediction)
     args.loss_weight = config['transport'].get('loss_weight', None)
+    args.loss_space = config['transport'].get('loss_space', None)
     args.sample_eps = config['transport'].get('sample_eps', None)
     args.train_eps = config['transport'].get('train_eps', None)
 
@@ -383,7 +384,7 @@ def main(args):
         model_string_name = args.model.replace("/", "-")
         experiment_name = (
             f"{experiment_index:03d}-TM2T-{model_string_name}-"
-            f"{args.path_type}-{args.prediction}-tmin{args.t_min}"
+            f"{args.path_type}-{args.prediction}-{args.loss_space}-tmin{args.t_min}"
         )
         experiment_dir = f"{args.results_dir}/{experiment_name}"
         checkpoint_dir = f"{experiment_dir}/checkpoints"
@@ -422,6 +423,7 @@ def main(args):
         args.path_type,
         args.pretrained_prediction,
         args.loss_weight,
+        None,  # pretrained model uses default loss_space (matches its prediction type)
         args.train_eps,
         args.sample_eps,
         t_min=0.0,
@@ -455,6 +457,7 @@ def main(args):
         args.path_type,
         args.prediction,
         args.loss_weight,
+        args.loss_space,
         args.train_eps,
         args.sample_eps,
         t_min=args.t_min,

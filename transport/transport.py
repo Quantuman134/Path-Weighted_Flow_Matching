@@ -36,6 +36,16 @@ class WeightType(enum.Enum):
     VELOCITY = enum.auto()
     LIKELIHOOD = enum.auto()
 
+class LossSpace(enum.Enum):
+    """
+    Which space to compute the training loss in.
+    VELOCITY: loss on predicted velocity vs ground-truth velocity
+    TARGET: loss on predicted x1 vs ground-truth x1
+    """
+
+    VELOCITY = enum.auto()
+    TARGET = enum.auto()
+
 
 class Transport:
 
@@ -45,6 +55,7 @@ class Transport:
         model_type,
         path_type,
         loss_type,
+        loss_space,
         train_eps,
         sample_eps,
         t_min=0.0,
@@ -56,6 +67,7 @@ class Transport:
         }
 
         self.loss_type = loss_type
+        self.loss_space = loss_space
         self.model_type = model_type
         self.path_sampler = path_options[path_type]()
         self.train_eps = train_eps
@@ -142,11 +154,30 @@ class Transport:
 
         terms = {}
         terms['pred'] = model_output
-        if self.model_type == ModelType.VELOCITY:
+        if self.model_type == ModelType.VELOCITY and self.loss_space == LossSpace.VELOCITY:
+            # velocity model, velocity loss (default)
             terms['loss'] = mean_flat(((model_output - ut) ** 2))
-        elif self.model_type == ModelType.TARGET:
-            # model predicts x1 (clean data); loss in x1-space
+        elif self.model_type == ModelType.TARGET and self.loss_space == LossSpace.TARGET:
+            # target model, target loss (default): model predicts x1 (clean data)
             terms['loss'] = mean_flat(((model_output - x1) ** 2))
+        elif self.model_type == ModelType.VELOCITY and self.loss_space == LossSpace.TARGET:
+            # velocity model, target loss: convert predicted v → x1_hat, compare to x1
+            # x1_hat = (sigma_t * v_hat - d_sigma_t * x_t) / (d_alpha_t * sigma_t - d_sigma_t * alpha_t)
+            # For linear path: x1_hat = x_t + (1-t) * v_hat
+            alpha_t, d_alpha_t = self.path_sampler.compute_alpha_t(path.expand_t_like_x(t, xt))
+            sigma_t, d_sigma_t = self.path_sampler.compute_sigma_t(path.expand_t_like_x(t, xt))
+            denom = d_alpha_t * sigma_t - d_sigma_t * alpha_t
+            x1_hat = (sigma_t * model_output - d_sigma_t * xt) / (denom + 1e-8)
+            terms['loss'] = mean_flat(((x1_hat - x1) ** 2))
+        elif self.model_type == ModelType.TARGET and self.loss_space == LossSpace.VELOCITY:
+            # target model, velocity loss: convert predicted x1_hat → implied v_hat, compare to v
+            # x0_hat = (x_t - alpha_t * x1_hat) / sigma_t; v_hat = d_alpha_t * x1_hat + d_sigma_t * x0_hat
+            # For linear path: v_hat = (x1_hat - x_t) / (1-t)
+            alpha_t, d_alpha_t = self.path_sampler.compute_alpha_t(path.expand_t_like_x(t, xt))
+            sigma_t, d_sigma_t = self.path_sampler.compute_sigma_t(path.expand_t_like_x(t, xt))
+            x0_hat = (xt - alpha_t * model_output) / (sigma_t + 1e-8)
+            v_hat = d_alpha_t * model_output + d_sigma_t * x0_hat
+            terms['loss'] = mean_flat(((v_hat - ut) ** 2))
         else:
             _, drift_var = self.path_sampler.compute_drift(xt, t)
             sigma_t, _ = self.path_sampler.compute_sigma_t(path.expand_t_like_x(t, xt))
@@ -158,7 +189,7 @@ class Transport:
                 weight = 1
             else:
                 raise NotImplementedError()
-            
+
             if self.model_type == ModelType.NOISE:
                 terms['loss'] = mean_flat(weight * ((model_output - x0) ** 2))
             else:

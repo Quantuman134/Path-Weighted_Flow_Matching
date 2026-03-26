@@ -8,6 +8,7 @@ def parse_transport_args(parser):
     group.add_argument("--path-type", type=str, default="Linear", choices=["Linear", "GVP", "VP"])
     group.add_argument("--prediction", type=str, default="velocity", choices=["velocity", "score", "noise", "target"])
     group.add_argument("--loss-weight", type=none_or_str, default=None, choices=[None, "velocity", "likelihood"])
+    group.add_argument("--loss-space", type=none_or_str, default=None, choices=[None, "velocity", "target"])
     group.add_argument("--sample-eps", type=float)
     group.add_argument("--train-eps", type=float)
 
