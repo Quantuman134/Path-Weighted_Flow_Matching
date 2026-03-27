@@ -2,8 +2,11 @@
 
 # Data Settings
 data:
-  data_path: /data/hkzhang/imagenet_raw/train  # REQUIRED: Path to training data (ImageFolder format)
-  val_data_path: /data/hkzhang/imagenet_raw/val  # Optional: Path to validation data (ImageFolder format)
+  # data_path: /data/hkzhang/imagenet_raw/train  # REQUIRED: Path to training data (ImageFolder format)
+  # val_data_path: /data/hkzhang/imagenet_raw/val  # Optional: Path to validation data (ImageFolder format)
+  data_path: /scratch/project/prj-02-visual-ai/hkzhang/ILSVRC/Data/CLS-LOC/train  # REQUIRED: Path to training data (ImageFolder format)
+  val_data_path: /scratch/project/prj-02-visual-ai/hkzhang/ILSVRC/Data/CLS-LOC/val  # Optional: Path to validation data (ImageFolder format)
+
 
 # Model Settings
 model:

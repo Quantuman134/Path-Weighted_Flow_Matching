@@ -1,7 +1,7 @@
 #!/bin/bash
 
-CUDA_VISIBLE_DEVICES="2,3"  # Set this to the GPU(s) you want to use (e.g., "0,1" for multiple GPUs)
-export CUDA_VISIBLE_DEVICES=$CUDA_VISIBLE_DEVICES
+# CUDA_VISIBLE_DEVICES="2,3"  # Set this to the GPU(s) you want to use (e.g., "0,1" for multiple GPUs)
+# export CUDA_VISIBLE_DEVICES=$CUDA_VISIBLE_DEVICES
 export OMP_NUM_THREADS=16  # 256 CPU cores / 2 GPUs = 128, using 16 for good balance
 
 # SiT Training Script
@@ -9,7 +9,7 @@ export OMP_NUM_THREADS=16  # 256 CPU cores / 2 GPUs = 128, using 16 for good bal
 config_file="./configs/sit_config.yaml"
 
 # Number of GPUs to use
-NUM_GPUS=2
+NUM_GPUS=8
 
 # Run training with torchrun (PyTorch distributed)
 MASTER_PORT=$(python -c "import socket; s=socket.socket(); s.bind(('',0)); print(s.getsockname()[1]); s.close()")
