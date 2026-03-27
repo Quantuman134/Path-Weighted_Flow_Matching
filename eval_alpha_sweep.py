@@ -31,6 +31,7 @@ if _SIT_DIR not in sys.path:
     sys.path.insert(0, _SIT_DIR)
 
 from FID import get_inception_features
+from IS import get_inception_probs, compute_is_from_probs
 from models import SiT_models
 from transport import Sampler, create_transport
 
@@ -297,6 +298,22 @@ def plot_fid_curve(fid_results: dict, save_path: str):
     print(f"Saved FID curve → {save_path}")
 
 
+def plot_is_curve(is_results: dict, save_path: str):
+    alphas = sorted(is_results.keys())
+    means  = [is_results[a]["mean"] for a in alphas]
+    stds   = [is_results[a]["std"]  for a in alphas]
+    plt.figure(figsize=(8, 5))
+    plt.errorbar(alphas, means, yerr=stds, marker="o", linewidth=2, capsize=4)
+    plt.xlabel("α  (blend weight for model1 target→velocity)")
+    plt.ylabel("IS (Inception Score)")
+    plt.title("IS vs Blend Weight α\n(α=0: pure velocity model,  α=1: pure target model)")
+    plt.grid(True, alpha=0.4)
+    plt.tight_layout()
+    plt.savefig(save_path, dpi=150)
+    plt.close()
+    print(f"Saved IS curve  → {save_path}")
+
+
 # ─── Main ────────────────────────────────────────────────────────────────────
 
 def main():
@@ -357,8 +374,16 @@ def main():
 
     latent_size = image_size // 8
 
+    # ── Pre-load Inception v3 for IS (fc layer kept intact — separate from FID model) ──
+    print("\nPre-loading Inception v3 for IS computation...")
+    from torchvision import models as tv_models
+    inception_for_is = tv_models.inception_v3(weights=tv_models.Inception_V3_Weights.DEFAULT)
+    inception_for_is.aux_logits = False
+    inception_for_is.eval().to(device)
+
     # ── Alpha sweep / scheduler ───────────────────────────────────────────────
     fid_results: dict = {}
+    is_results: dict = {}
     scheduler_type = cfg["eval"].get("alpha_scheduler", None)
     alpha_fn = build_alpha_fn(scheduler_type)
 
@@ -379,6 +404,12 @@ def main():
         fid = compute_fid(gen_features, ref_features)
         fid_results[label] = fid
         print(f"  FID = {fid:.4f}")
+
+        print("  Extracting Inception probs for IS...")
+        gen_probs = get_inception_probs(gen_images, batch_size=batch_size, device=device, model=inception_for_is)
+        is_mean, is_std = compute_is_from_probs(gen_probs, splits=10)
+        is_results[label] = {"mean": is_mean, "std": is_std}
+        print(f"  IS  = {is_mean:.4f} ± {is_std:.4f}")
 
         grid_path = os.path.join(images_dir, f"grid_{label}.png")
         save_grid(gen_images, cfg["eval"]["grid_samples"], grid_path)
@@ -402,6 +433,12 @@ def main():
             fid_results[alpha] = fid
             print(f"  FID = {fid:.4f}")
 
+            print("  Extracting Inception probs for IS...")
+            gen_probs = get_inception_probs(gen_images, batch_size=batch_size, device=device, model=inception_for_is)
+            is_mean, is_std = compute_is_from_probs(gen_probs, splits=10)
+            is_results[alpha] = {"mean": is_mean, "std": is_std}
+            print(f"  IS  = {is_mean:.4f} ± {is_std:.4f}")
+
             alpha_str = f"{alpha:.2f}".replace(".", "_")
             grid_path = os.path.join(images_dir, f"grid_alpha_{alpha_str}.png")
             save_grid(gen_images, cfg["eval"]["grid_samples"], grid_path)
@@ -412,8 +449,14 @@ def main():
         json.dump({str(k): v for k, v in sorted(fid_results.items())}, f, indent=2)
     print(f"\nSaved FID results → {json_path}")
 
+    is_json_path = os.path.join(exp_dir, "is_results.json")
+    with open(is_json_path, "w") as f:
+        json.dump({str(k): v for k, v in sorted(is_results.items())}, f, indent=2)
+    print(f"Saved IS results  → {is_json_path}")
+
     if alpha_fn is None:
         plot_fid_curve(fid_results, os.path.join(exp_dir, "fid_curve.png"))
+        plot_is_curve(is_results, os.path.join(exp_dir, "is_curve.png"))
     print("\nDone.")
 
 
