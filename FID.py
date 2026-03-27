@@ -16,7 +16,7 @@ from scipy.linalg import sqrtm
 from torch.utils.data import DataLoader, TensorDataset
 from PIL import Image
 
-from utils import export_tensor_as_image, import_image_as_tensor
+# from utils import export_tensor_as_image, import_image_as_tensor
 
 def arg_parse():
     parser = argparse.ArgumentParser(description="Calculate FID score")

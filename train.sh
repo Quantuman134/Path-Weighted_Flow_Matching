@@ -1,7 +1,7 @@
 #!/bin/bash
 
-# CUDA_VISIBLE_DEVICES="2,3"  # Set this to the GPU(s) you want to use (e.g., "0,1" for multiple GPUs)
-# export CUDA_VISIBLE_DEVICES=$CUDA_VISIBLE_DEVICES
+CUDA_VISIBLE_DEVICES="0, 1, 2, 3, 4, 5, 6, 7"  # Set this to the GPU(s) you want to use (e.g., "0,1" for multiple GPUs)
+export CUDA_VISIBLE_DEVICES=$CUDA_VISIBLE_DEVICES
 export OMP_NUM_THREADS=16  # 256 CPU cores / 2 GPUs = 128, using 16 for good balance
 
 # SiT Training Script

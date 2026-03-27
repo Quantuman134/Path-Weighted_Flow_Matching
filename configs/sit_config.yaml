@@ -10,8 +10,8 @@ data:
 
 # Model Settings
 model:
-  model: 'SiT-S/2'  # Model architecture: SiT-XL/2, SiT-L/2, SiT-B/2, etc.
-  image_size: 64  # Image size: 256 or 512
+  model: 'SiT-XL/2'  # Model architecture: SiT-XL/2, SiT-L/2, SiT-B/2, etc.
+  image_size: 256  # Image size: 256 or 512
   num_classes: 1000  # Number of classes in the dataset
   vae: 'ema'  # VAE model: 'ema' or 'mse'
 
@@ -20,14 +20,14 @@ transport:
   path_type: 'Linear'  # Path type: 'Linear', 'GVP', or 'VP'
   prediction: 'target' # Prediction type: 'velocity', 'score', or 'noise'
   loss_weight: null  # Loss weight: null, 'velocity', or 'likelihood'
-  loss_space: 'velocity'  # Loss space: null=default (matches prediction type), 'velocity', or 'target'
+  loss_space: 'target'  # Loss space: null=default (matches prediction type), 'velocity', or 'target'
   sample_eps: null  # Optional: Sampling epsilon (float)
   train_eps: null  # Optional: Training epsilon (float)
 
 # Training Settings
 training:
   epochs: 3000  # Number of training epochs
-  global_batch_size: 5120  # Total batch size across all GPUs
+  global_batch_size: 256  # Total batch size across all GPUs
   global_seed: 483  # Random seed for reproducibility
   num_workers: 20  # Number of data loading workers (increased for better GPU utilization)
 
