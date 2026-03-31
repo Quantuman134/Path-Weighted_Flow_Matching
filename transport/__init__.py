@@ -41,6 +41,14 @@ def create_transport(
         loss_space_type = LossSpace.VELOCITY
     elif loss_space == "target":
         loss_space_type = LossSpace.TARGET
+    elif loss_space == "noise":
+        loss_space_type = LossSpace.NOISE
+    elif loss_space == "min_snr":
+        loss_space_type = LossSpace.MIN_SNR
+    elif loss_space == "constant_blend":
+        loss_space_type = LossSpace.CONSTANT_BLEND
+    elif loss_space == "linear_blend":
+        loss_space_type = LossSpace.LINEAR_BLEND
     else:
         # default: match model type
         loss_space_type = LossSpace.TARGET if model_type == ModelType.TARGET else LossSpace.VELOCITY

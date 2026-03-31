@@ -20,7 +20,7 @@ transport:
   path_type: 'Linear'  # Path type: 'Linear', 'GVP', or 'VP'
   prediction: 'velocity' # Prediction type: 'velocity', 'score', or 'noise'
   loss_weight: null  # Loss weight: null, 'velocity', or 'likelihood'
-  loss_space: 'velocity'  # Loss space: null=default (matches prediction type), 'velocity', or 'target'
+  loss_space: 'velocity'  # Loss space: null=default, 'velocity', 'target', 'noise', 'min_snr', 'constant_blend', 'linear_blend'
   sample_eps: null  # Optional: Sampling epsilon (float)
   train_eps: null  # Optional: Training epsilon (float)
 
