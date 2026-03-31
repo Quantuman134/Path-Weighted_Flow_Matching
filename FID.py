@@ -54,7 +54,6 @@ def get_inception_features(images: torch.Tensor, batch_size: int = 64, device: s
     with torch.no_grad():
         for (batch,) in loader:
             batch = resize(batch).to(device)
-            batch = batch * 2.0 - 1.0   # [0, 1] → [-1, 1] (standard FID normalization)
             feat = model(batch)          # (B, 2048)
             features.append(feat.cpu().numpy())
 
