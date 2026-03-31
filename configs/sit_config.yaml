@@ -55,4 +55,4 @@ sampling:
 checkpoint:
   # ckpt: ./results/027-SiT-S-2-Linear-velocity-None/checkpoints/0640000.pt  # Optional: Path to checkpoint to resume training from
   
-  ckpt: ./results/007-SiT-XL-2-Linear-velocity-None-velocity-IS256-BS1024/checkpoints/0082500.pt  # Optional: Path to checkpoint to resume training from
+  ckpt: ./results/012-SiT-XL-2-Linear-velocity-None-velocity-IS256-BS1024/checkpoints/0162500.pt  # Optional: Path to checkpoint to resume training from
