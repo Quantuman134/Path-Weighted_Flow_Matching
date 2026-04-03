@@ -18,9 +18,9 @@ model:
 # Transport Settings
 transport:
   path_type: 'Linear'  # Path type: 'Linear', 'GVP', or 'VP'
-  prediction: 'velocity' # Prediction type: 'velocity', 'score', or 'noise'
+  prediction: 'target' # Prediction type: 'velocity', 'score', or 'noise'
   loss_weight: null  # Loss weight: null, 'velocity', or 'likelihood'
-  loss_space: 'constant_blend'  # Loss space: null=default, 'velocity', 'target', 'noise', 'min_snr', 'constant_blend', 'linear_blend'
+  loss_space: 'target'  # Loss space: null=default, 'velocity', 'target', 'noise', 'min_snr', 'constant_blend', 'linear_blend'
   sample_eps: null  # Optional: Sampling epsilon (float)
   train_eps: null  # Optional: Training epsilon (float)
 
@@ -53,6 +53,6 @@ sampling:
 
 # Checkpoint Settings
 checkpoint:
-  # ckpt: ./results/027-SiT-S-2-Linear-velocity-None/checkpoints/0640000.pt  # Optional: Path to checkpoint to resume training from
+  ckpt: ./results/014-SiT-XL-2-Linear-target-None-target-IS256-BS256/checkpoints/0890000.pt  # Optional: Path to checkpoint to resume training from
   
-  ckpt: null  # Optional: Path to checkpoint to resume training from
+  # ckpt: null  # Optional: Path to checkpoint to resume training from

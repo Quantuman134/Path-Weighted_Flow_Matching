@@ -220,7 +220,8 @@ class Transport:
             denom = d_alpha_t * sigma_t - d_sigma_t * alpha_t
             x1_hat = (sigma_t * model_output - d_sigma_t * xt) / (denom + 1e-8)
             t_ = path.expand_t_like_x(t, xt)
-            weight = (1 - t_) + t_ / ((1 - t_) ** 2 + 1e-8)
+            th.clamp((alpha_t / (sigma_t + 1e-8)) ** 2, max=5)
+            weight = th.clamp((1 - t_) + t_ / ((1 - t_) ** 2 + 1e-8), max=5)
             terms['loss'] = mean_flat(weight * ((x1_hat - x1) ** 2))
         else:
             _, drift_var = self.path_sampler.compute_drift(xt, t)
