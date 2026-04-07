@@ -24,14 +24,14 @@
 
 # ── Experiment output ─────────────────────────────────────────────────────────
 experiment:
-  name: "perfromance_DiT_V_linear_blend"        # Results go to {experiments_base_dir}/{name}/
+  name: "perfromance_DiT_V_constant_blend"        # Results go to {experiments_base_dir}/{name}/
   experiments_base_dir: "./experiment"
 
 
 # ── Checkpoint settings ───────────────────────────────────────────────────────
 checkpoint:
   # Directory containing XXXXXXX.pt checkpoint files
-  checkpoint_dir: "./results/021-SiT-XL-2-Linear-velocity-None-linear_blend-IS256-BS256/checkpoints/"
+  checkpoint_dir: "./results/021-SiT-XL-2-Linear-velocity-None-constant_blend-IS256-BS256/checkpoints/"
 
   # List of training steps to evaluate.
   # Each entry must match a file: {checkpoint_dir}/{step:07d}.pt

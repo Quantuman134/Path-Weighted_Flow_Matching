@@ -36,7 +36,7 @@ checkpoint:
   # List of training steps to evaluate.
   # Each entry must match a file: {checkpoint_dir}/{step:07d}.pt
   # Example: step 100000 → 0100000.pt
-  steps: [200000, 400000, 600000, 800000, 1000000]
+  steps: [100000, 200000, 400000, 600000, 800000, 1000000]
 
   # true  → load ckpt["ema"]   (recommended: EMA weights give better FID)
   # false → load ckpt["model"] (raw training weights)
@@ -113,7 +113,7 @@ sampling:
   # Classifier-free guidance scale.
   # 1.0 = disabled (unconditional).
   # >1.0 = enabled (typical values: 1.5 – 4.0 for ImageNet).
-  cfg_scale: 1.5
+  cfg_scale: [1.0, 1.5, 2.0, 3.0, 4.0]
 
   # Number of ODE integration steps (for fixed-step solvers: euler, rk4).
   # Higher = better quality but slower. Typical: 250.

@@ -12,14 +12,17 @@
 # List of config files to run sequentially.
 # Add or comment out entries as needed.
 CONFIGS=(
-    "configs/exp_model_validation_config.yaml"
+    # "configs/exp_model_validation_config_linear_blend.yaml"
+    # "configs/exp_model_validation_config_min_snr.yaml"
+    "configs/exp_model_validation_config_vv.yaml"
+    "configs/exp_model_validation_config_tt.yaml"
     # "configs/exp_model_validation_config_2.yaml"
 )
 
 # Number of GPUs to use.
 # Set to 1 for single-GPU mode.
 # Set to >1 for multi-GPU mode (uses torchrun with NCCL).
-NUM_GPUS=4
+NUM_GPUS=8
 
 # Device for single-GPU mode (ignored when NUM_GPUS > 1).
 SINGLE_GPU_DEVICE="cuda:0"
