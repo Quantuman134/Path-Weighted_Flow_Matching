@@ -7,7 +7,7 @@
 # ============================================================
 
 # Path to the config file
-CONFIG="configs/exp_model_validation_config.yaml"
+CONFIG="configs/exp_model_validation_config_min_snr.yaml"
 
 # Number of GPUs to use.
 # Set to 1 for single-GPU mode (uses --device from config or CLI).
