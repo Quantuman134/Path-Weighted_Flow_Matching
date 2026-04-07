@@ -1,0 +1,57 @@
+# Configuration for alpha-sweep evaluation: target model blended with noise model
+#
+# At every ODE step both models are queried and velocities blended:
+#   v_t = alpha * v1_t + (1 - alpha) * v2_t
+# where model1 predicts target (converted to velocity) and model2 predicts noise
+# (converted to velocity via score). alpha=0 → pure noise model, alpha=1 → pure target model.
+
+experiment:
+  name: "alpha_sweep_target_noise_1"
+  results_base_dir: "./experiment"
+
+vae: 'ema'  # 'ema' or 'mse'
+
+model1:                               # target predictor
+  ckpt: './results/016-SiT-S-2-Linear-target-None/checkpoints/0140000.pt'  # REQUIRED
+  use_ema: true                        # true → load state["ema"], false → state["model"]
+  model: 'SiT-S/2'                    # architecture: SiT-XL/2, SiT-L/2, SiT-B/2, SiT-S/2
+  image_size: 64                       # 256 or 512
+  num_classes: 1000
+  prediction: 'target'                 # prediction type this model was trained with
+  path_type: 'Linear'                  # 'Linear', 'GVP', or 'VP'
+  loss_weight: null
+  sample_eps: null
+  train_eps: null
+
+model2:                               # noise predictor
+  ckpt: ''                             # REQUIRED: path to noise-trained checkpoint
+  use_ema: true
+  model: 'SiT-S/2'
+  image_size: 64
+  num_classes: 1000
+  prediction: 'noise'                  # noise model — noise_ode converts ε_hat to velocity
+  path_type: 'Linear'
+  loss_weight: null
+  sample_eps: null
+  train_eps: null
+
+eval:
+  alpha_scheduler: null  # null → use alpha_list sweep; 'linear' → alpha(t) = 1-t
+  alpha_list: [0.0, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 1.0]
+  num_images: 50000
+  grid_samples: 256
+  batch_size: 2560
+  seed: 85132
+
+data:
+  imagenet_val_path: '/data/hkzhang/imagenet_raw/val'
+  num_ref_images: 50000
+
+sampling:
+  cfg_scale: 4.0
+  num_sampling_steps: 50
+  sampling_method: 'euler'
+  atol: 1.0e-6
+  rtol: 1.0e-3
+
+device: 'cuda:3'

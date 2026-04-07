@@ -4,8 +4,16 @@ Alpha-sweep evaluation for velocity-blended SiT.
 For each alpha in alpha_list:
   At every ODE step, both models are queried and their velocity predictions blended:
     v_t = alpha * v1_t + (1 - alpha) * v2_t
-  where model1 predicts target (x1_hat, converted to velocity) and
-  model2 predicts velocity directly.
+  where model1 and model2 can use any supported prediction type (target, velocity,
+  noise, score) — each model's drift function handles the conversion to velocity
+  internally.
+
+Supported blend combinations (set via config prediction fields):
+  target   + velocity  (default)
+  target   + noise
+  velocity + noise
+  velocity + velocity
+  (and any other combination of the four prediction types)
 
 Output: FID-vs-alpha curve + grid images saved under ./experiment/<name>/
 """
@@ -342,11 +350,14 @@ def main():
     torch.set_grad_enabled(False)
 
     # ── Load models ───────────────────────────────────────────────────────────
-    print("\nLoading Model 1 (target predictor)...")
+    pred1 = cfg["model1"].get("prediction", "velocity")
+    pred2 = cfg["model2"].get("prediction", "velocity")
+
+    print(f"\nLoading Model 1 ({pred1} predictor)...")
     model1   = load_sit_model(cfg["model1"], device)
     sampler1 = build_sampler(cfg["model1"])
 
-    print("Loading Model 2 (velocity predictor)...")
+    print(f"Loading Model 2 ({pred2} predictor)...")
     model2   = load_sit_model(cfg["model2"], device)
     sampler2 = build_sampler(cfg["model2"])
 
