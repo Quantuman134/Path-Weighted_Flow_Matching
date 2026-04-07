@@ -111,9 +111,11 @@ data:
 # ── ODE sampling ─────────────────────────────────────────────────────────────
 sampling:
   # Classifier-free guidance scale.
-  # 1.0 = disabled (unconditional).
-  # >1.0 = enabled (typical values: 1.5 – 4.0 for ImageNet).
-  cfg_scale: 4.0
+  # Accepts a scalar (e.g. 4.0) or a list (e.g. [1.0, 2.0, 4.0]).
+  # List → one set of results + plots per cfg value under {name}/cfg_{value}/
+  # Scalar or single-element list → flat output under {name}/ (backward compat).
+  # 1.0 = conditioned only (no guidance). >1.0 = CFG enabled.
+  cfg_scale: [1.0, 2.0, 4.0]
 
   # Number of ODE integration steps (for fixed-step solvers: euler, rk4).
   # Higher = better quality but slower. Typical: 250.

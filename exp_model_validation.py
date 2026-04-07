@@ -495,127 +495,156 @@ def main():
     all_labels  = make_balanced_labels(num_images, model_args.num_classes, seed=seed)
     labels_this_rank = all_labels[rank::world_size]
 
-    # ── 8. Load any previously completed results for resume ──────────────────
-    results_json_path = os.path.join(exp_dir, "results.json")
-    results: dict = {}
-    if rank == 0 and os.path.isfile(results_json_path):
-        with open(results_json_path) as f:
-            loaded = json.load(f)
-        results = {int(k): v for k, v in loaded.items()}
-        if results:
-            print(f"\nResuming: {len(results)} step(s) already completed: "
-                  f"{sorted(results.keys())}")
+    # ── 8. Parse cfg_scale — scalar or list ──────────────────────────────────
+    cfg_scales_raw = cfg["sampling"]["cfg_scale"]
+    cfg_scales  = cfg_scales_raw if isinstance(cfg_scales_raw, list) else [cfg_scales_raw]
+    use_subdirs = len(cfg_scales) > 1
 
-    # ── 9. Checkpoint loop ────────────────────────────────────────────────────
-    for step in steps:
-        ckpt_path = os.path.join(ckpt_dir, f"{step:07d}.pt")
+    # ── 9. CFG sweep (outer) + checkpoint loop (inner) ───────────────────────
+    for cfg_scale_val in cfg_scales:
 
-        # Broadcast skip decision from rank 0 so all ranks agree
-        if rank == 0:
-            skip_step = step in results
+        # Output directory: per-cfg subdir when sweeping, flat otherwise
+        if use_subdirs:
+            out_dir = os.path.join(exp_dir, f"cfg_{cfg_scale_val}")
         else:
-            skip_step = False
-        if world_size > 1:
-            skip_tensor = torch.tensor([int(skip_step)], device=device)
-            dist.broadcast(skip_tensor, src=0)
-            skip_step = bool(skip_tensor.item())
+            out_dir = exp_dir
 
-        if skip_step:
+        if rank == 0:
+            os.makedirs(out_dir, exist_ok=True)
+            print(f"\n{'═'*55}")
+            print(f" cfg_scale = {cfg_scale_val}")
+            print(f"{'═'*55}")
+        barrier(world_size)
+
+        # Per-cfg sampling config (only cfg_scale overridden)
+        sampling_cfg = dict(cfg["sampling"])
+        sampling_cfg["cfg_scale"] = cfg_scale_val
+
+        # Per-cfg resume: load existing results.json if present
+        results_json_path = os.path.join(out_dir, "results.json")
+        results: dict = {}
+        if rank == 0 and os.path.isfile(results_json_path):
+            with open(results_json_path) as f:
+                loaded = json.load(f)
+            results = {int(k): v for k, v in loaded.items()}
+            if results:
+                print(f"Resuming: {len(results)} step(s) already completed: "
+                      f"{sorted(results.keys())}")
+
+        for step in steps:
+            ckpt_path = os.path.join(ckpt_dir, f"{step:07d}.pt")
+
+            # Broadcast skip decision from rank 0 so all ranks agree
             if rank == 0:
-                print(f"Step {step:,d} already done — skipping.")
-            continue
-
-        # Missing checkpoint
-        if not os.path.isfile(ckpt_path):
-            if skip_missing:
-                if rank == 0:
-                    print(f"WARNING: checkpoint not found: {ckpt_path} — skipping.")
-                continue
+                skip_step = step in results
             else:
-                raise FileNotFoundError(f"Checkpoint not found: {ckpt_path}")
+                skip_step = False
+            if world_size > 1:
+                skip_tensor = torch.tensor([int(skip_step)], device=device)
+                dist.broadcast(skip_tensor, src=0)
+                skip_step = bool(skip_tensor.item())
 
-        if rank == 0:
-            print(f"\n{'─'*55}")
-            print(f" Step {step:,d}  →  {ckpt_path}")
-            print(f"{'─'*55}")
+            if skip_step:
+                if rank == 0:
+                    print(f"Step {step:,d} already done — skipping.")
+                continue
 
-        # Load weights, verify architecture consistency
-        state = torch.load(ckpt_path, map_location="cpu", weights_only=False)
-        if "args" in state:
-            step_args = resolve_model_args(state["args"], cfg.get("model_overrides") or {})
-            if (step_args.model != model_args.model
-                    or step_args.image_size != model_args.image_size
-                    or step_args.num_classes != model_args.num_classes):
-                raise ValueError(
-                    f"Architecture mismatch at step {step}: "
-                    f"expected model={model_args.model} image_size={model_args.image_size}, "
-                    f"got model={step_args.model} image_size={step_args.image_size}. "
-                    f"All steps must share the same architecture."
+            # Missing checkpoint
+            if not os.path.isfile(ckpt_path):
+                if skip_missing:
+                    if rank == 0:
+                        print(f"WARNING: checkpoint not found: {ckpt_path} — skipping.")
+                    continue
+                else:
+                    raise FileNotFoundError(f"Checkpoint not found: {ckpt_path}")
+
+            if rank == 0:
+                print(f"\n{'─'*55}")
+                print(f" Step {step:,d}  →  {ckpt_path}")
+                print(f"{'─'*55}")
+
+            # Load weights, verify architecture consistency
+            state = torch.load(ckpt_path, map_location="cpu", weights_only=False)
+            if "args" in state:
+                step_args = resolve_model_args(state["args"], cfg.get("model_overrides") or {})
+                if (step_args.model != model_args.model
+                        or step_args.image_size != model_args.image_size
+                        or step_args.num_classes != model_args.num_classes):
+                    raise ValueError(
+                        f"Architecture mismatch at step {step}: "
+                        f"expected model={model_args.model} image_size={model_args.image_size}, "
+                        f"got model={step_args.model} image_size={step_args.image_size}. "
+                        f"All steps must share the same architecture."
+                    )
+            key = "ema" if use_ema else "model"
+            model.load_state_dict(state[key])
+            model.eval()
+            del state
+
+            # Generate images (all ranks)
+            if rank == 0:
+                print("  Generating images...")
+            local_arr = generate_images_rank(
+                model, sampler, vae,
+                labels_this_rank,
+                sampling_cfg,
+                cfg["eval"]["batch_size"],
+                latent_size,
+                model_args.num_classes,
+                device,
+                seed, rank, world_size,
+            )
+
+            # Gather to rank 0 (in-memory, no disk I/O)
+            all_images = gather_images(local_arr, rank, world_size)
+            del local_arr
+            barrier(world_size)
+
+            # FID + IS on rank 0 only
+            if rank == 0:
+                all_images = all_images[:num_images]  # trim any excess from uneven split
+                fid_batch  = cfg["eval"]["fid_batch_size"]
+                chunk_size = cfg["eval"]["fid_chunk_size"]
+
+                print("  Extracting Inception features for FID...")
+                gen_features = extract_features_chunked(
+                    all_images, fid_batch, chunk_size, device, mode="fid"
                 )
-        key = "ema" if use_ema else "model"
-        model.load_state_dict(state[key])
-        model.eval()
-        del state
+                fid = compute_fid_from_features(gen_features, ref_features)
+                print(f"  FID = {fid:.4f}")
 
-        # Generate images (all ranks)
+                print("  Computing Inception Score...")
+                gen_probs = extract_features_chunked(
+                    all_images, fid_batch, chunk_size, device,
+                    inception_model=inception_for_is, mode="is",
+                )
+                is_mean, is_std = compute_is_from_probs(gen_probs, splits=10)
+                print(f"  IS  = {is_mean:.4f} ± {is_std:.4f}")
+
+                del all_images, gen_features, gen_probs
+
+                results[step] = {
+                    "fid":     float(fid),
+                    "is_mean": float(is_mean),
+                    "is_std":  float(is_std),
+                }
+                save_results_json(results, results_json_path)
+                print(f"  Saved → {results_json_path}")
+
+            barrier(world_size)
+
+        # ── Final save + plots for this cfg ──────────────────────────────────
         if rank == 0:
-            print("  Generating images...")
-        local_arr = generate_images_rank(
-            model, sampler, vae,
-            labels_this_rank,
-            cfg["sampling"],
-            cfg["eval"]["batch_size"],
-            latent_size,
-            model_args.num_classes,
-            device,
-            seed, rank, world_size,
-        )
-
-        # Gather to rank 0 (in-memory, no disk I/O)
-        all_images = gather_images(local_arr, rank, world_size)
-        del local_arr
-        barrier(world_size)
-
-        # FID + IS on rank 0 only
-        if rank == 0:
-            all_images = all_images[:num_images]  # trim any excess from uneven split
-            fid_batch  = cfg["eval"]["fid_batch_size"]
-            chunk_size = cfg["eval"]["fid_chunk_size"]
-
-            print("  Extracting Inception features for FID...")
-            gen_features = extract_features_chunked(
-                all_images, fid_batch, chunk_size, device, mode="fid"
-            )
-            fid = compute_fid_from_features(gen_features, ref_features)
-            print(f"  FID = {fid:.4f}")
-
-            print("  Computing Inception Score...")
-            gen_probs = extract_features_chunked(
-                all_images, fid_batch, chunk_size, device,
-                inception_model=inception_for_is, mode="is",
-            )
-            is_mean, is_std = compute_is_from_probs(gen_probs, splits=10)
-            print(f"  IS  = {is_mean:.4f} ± {is_std:.4f}")
-
-            del all_images, gen_features, gen_probs
-
-            results[step] = {
-                "fid":     float(fid),
-                "is_mean": float(is_mean),
-                "is_std":  float(is_std),
-            }
             save_results_json(results, results_json_path)
-            print(f"  Saved → {results_json_path}")
-
+            print(f"\nFinal results saved → {results_json_path}")
+            if results:
+                plot_fid_curve(results, os.path.join(out_dir, "fid_curve.png"))
+                plot_is_curve(results,  os.path.join(out_dir, "is_curve.png"))
         barrier(world_size)
 
-    # ── 10. Final save + plots (rank 0) ──────────────────────────────────────
+    # ── Done ─────────────────────────────────────────────────────────────────
     if rank == 0:
-        save_results_json(results, results_json_path)
-        print(f"\nFinal results saved → {results_json_path}")
-        plot_fid_curve(results, os.path.join(exp_dir, "fid_curve.png"))
-        plot_is_curve(results,  os.path.join(exp_dir, "is_curve.png"))
-        print("Done.")
+        print("\nAll cfg_scale evaluations complete.")
 
     if world_size > 1:
         dist.destroy_process_group()
