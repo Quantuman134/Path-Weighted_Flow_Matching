@@ -49,6 +49,26 @@ def create_transport(
         loss_space_type = LossSpace.CONSTANT_BLEND
     elif loss_space == "linear_blend":
         loss_space_type = LossSpace.LINEAR_BLEND
+    elif loss_space == "constant_blend_xn":
+        loss_space_type = LossSpace.CONSTANT_BLEND_XN
+    elif loss_space == "linear_blend_xn":
+        loss_space_type = LossSpace.LINEAR_BLEND_XN
+    elif loss_space == "constant_blend_vn":
+        loss_space_type = LossSpace.CONSTANT_BLEND_VN
+    elif loss_space == "linear_blend_vn":
+        loss_space_type = LossSpace.LINEAR_BLEND_VN
+    elif loss_space == "constant_blend_xv_entire":
+        loss_space_type = LossSpace.CONSTANT_BLEND_XV_ENTIRE
+    elif loss_space == "linear_blend_xv_entire":
+        loss_space_type = LossSpace.LINEAR_BLEND_XV_ENTIRE
+    elif loss_space == "constant_blend_xn_entire":
+        loss_space_type = LossSpace.CONSTANT_BLEND_XN_ENTIRE
+    elif loss_space == "linear_blend_xn_entire":
+        loss_space_type = LossSpace.LINEAR_BLEND_XN_ENTIRE
+    elif loss_space == "constant_blend_vn_entire":
+        loss_space_type = LossSpace.CONSTANT_BLEND_VN_ENTIRE
+    elif loss_space == "linear_blend_vn_entire":
+        loss_space_type = LossSpace.LINEAR_BLEND_VN_ENTIRE
     else:
         # default: match model type
         loss_space_type = LossSpace.TARGET if model_type == ModelType.TARGET else LossSpace.VELOCITY

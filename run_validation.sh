@@ -14,7 +14,7 @@
 CONFIGS=(
     # "configs/exp_model_validation_config_linear_blend.yaml"
     # "configs/exp_model_validation_config_min_snr.yaml"
-    "configs/exp_model_validation_config_vv.yaml"
+    # "configs/exp_model_validation_config_vv.yaml"
     "configs/exp_model_validation_config_tt.yaml"
     # "configs/exp_model_validation_config_2.yaml"
 )
