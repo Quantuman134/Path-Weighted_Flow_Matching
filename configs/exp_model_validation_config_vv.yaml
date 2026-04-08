@@ -44,7 +44,7 @@ checkpoint:
 
   # true  → skip checkpoints whose .pt file is missing (warn and continue)
   # false → raise FileNotFoundError if any step file is missing
-  skip_missing: false
+  skip_missing: true
 
 
 # ── Optional model overrides ──────────────────────────────────────────────────
