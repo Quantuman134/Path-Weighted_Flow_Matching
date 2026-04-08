@@ -6,7 +6,7 @@
 # (converted to velocity via score). alpha=0 → pure noise model, alpha=1 → pure target model.
 
 experiment:
-  name: "alpha_sweep_target_noise_1"
+  name: "alpha_sweep_target_noise_256"
   results_base_dir: "./experiment"
 
 vae: 'ema'  # 'ema' or 'mse'
@@ -14,10 +14,10 @@ vae: 'ema'  # 'ema' or 'mse'
 model1:                               # target predictor
   ckpt: './results/016-SiT-S-2-Linear-target-None/checkpoints/0140000.pt'  # REQUIRED
   use_ema: true                        # true → load state["ema"], false → state["model"]
-  model: 'SiT-S/2'                    # architecture: SiT-XL/2, SiT-L/2, SiT-B/2, SiT-S/2
-  image_size: 64                       # 256 or 512
+  model: 'SiT-XL/2'                    # architecture: SiT-XL/2, SiT-L/2, SiT-B/2, SiT-S/2
+  image_size: 256                       # 256 or 512
   num_classes: 1000
-  prediction: 'target'                 # prediction type this model was trained with
+  prediction: 'velocity'                 # prediction type this model was trained with
   path_type: 'Linear'                  # 'Linear', 'GVP', or 'VP'
   loss_weight: null
   sample_eps: null
@@ -26,10 +26,10 @@ model1:                               # target predictor
 model2:                               # noise predictor
   ckpt: ''                             # REQUIRED: path to noise-trained checkpoint
   use_ema: true
-  model: 'SiT-S/2'
-  image_size: 64
+  model: 'SiT-XL/2'
+  image_size: 256
   num_classes: 1000
-  prediction: 'noise'                  # noise model — noise_ode converts ε_hat to velocity
+  prediction: 'velocity'                  # noise model — noise_ode converts ε_hat to velocity
   path_type: 'Linear'
   loss_weight: null
   sample_eps: null
@@ -38,14 +38,14 @@ model2:                               # noise predictor
 eval:
   alpha_scheduler: null  # null → use alpha_list sweep; 'linear' → alpha(t) = 1-t
   alpha_list: [0.0, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 1.0]
-  num_images: 50000
+  num_images: 5000
   grid_samples: 256
-  batch_size: 2560
+  batch_size: 256
   seed: 85132
 
 data:
   imagenet_val_path: '/data/hkzhang/imagenet_raw/val'
-  num_ref_images: 50000
+  num_ref_images: 5000
 
 sampling:
   cfg_scale: 4.0
