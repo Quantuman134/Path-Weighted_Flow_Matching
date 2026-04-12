@@ -8,6 +8,7 @@ def create_transport(
     train_eps=None,
     sample_eps=None,
     t_min=0.0,
+    scale_loss=False,
 ):
     """function for creating Transport object
     **Note**: model prediction defaults to velocity
@@ -102,6 +103,7 @@ def create_transport(
         train_eps=train_eps,
         sample_eps=sample_eps,
         t_min=t_min,
+        scale_loss=scale_loss,
     )
     
     return state

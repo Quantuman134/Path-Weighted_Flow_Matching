@@ -30,6 +30,7 @@ training:
   global_batch_size: 256  # Total batch size across all GPUs
   global_seed: 483  # Random seed for reproducibility
   num_workers: 20  # Number of data loading workers (increased for better GPU utilization)
+  scale_enable: false  # Enable loss scaling for velocity prediction model
 
 # Logging Settings
 logging:

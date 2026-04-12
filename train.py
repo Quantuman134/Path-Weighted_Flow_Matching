@@ -89,8 +89,9 @@ def config_to_args(config):
     args.loss_space = config['transport'].get('loss_space', None)
     args.sample_eps = config['transport'].get('sample_eps', None)
     args.train_eps = config['transport'].get('train_eps', None)
-    
+
     # Training settings
+    args.scale_enable = bool(config['training'].get('scale_enable', False))
     args.epochs = int(config['training']['epochs'])
     args.global_batch_size = int(config['training']['global_batch_size'])
     args.global_seed = int(config['training']['global_seed'])
@@ -370,6 +371,8 @@ def main(args):
         os.makedirs(args.results_dir, exist_ok=True)  # Make results folder (holds all experiment subfolders)
         experiment_index = len(glob(f"{args.results_dir}/*"))
         model_string_name = args.model.replace("/", "-")  # e.g., SiT-XL/2 --> SiT-XL-2 (for naming folders)
+        if args.scale_enable:
+            model_string_name = model_string_name + "-scaled"
         experiment_name = f"{experiment_index:03d}-{model_string_name}-" \
                         f"{args.path_type}-{args.prediction}-{args.loss_weight}-{args.loss_space}" \
                         f"-IS{args.image_size}-BS{args.global_batch_size}"
@@ -415,7 +418,8 @@ def main(args):
         args.loss_weight,
         args.loss_space,
         args.train_eps,
-        args.sample_eps
+        args.sample_eps,
+        scale_loss=args.scale_enable,
     )  # default: velocity;
     transport_sampler = Sampler(transport)
     vae = AutoencoderKL.from_pretrained(f"stabilityai/sd-vae-ft-{args.vae}").to(device)

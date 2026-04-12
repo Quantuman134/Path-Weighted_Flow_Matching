@@ -75,6 +75,21 @@ class LossSpace(enum.Enum):
     LINEAR_BLEND_VN_ENTIRE = enum.auto()
 
 
+VELOCITY_LOSS_SCALES = {
+    LossSpace.VELOCITY:                 1.0,
+    LossSpace.TARGET:                   3.0,
+    LossSpace.NOISE:                    3.0,
+    LossSpace.CONSTANT_BLEND_XV:        0.5,
+    LossSpace.CONSTANT_BLEND_XV_ENTIRE: 0.4286,
+    LossSpace.LINEAR_BLEND_XV:          1.0,
+    LossSpace.LINEAR_BLEND_XV_ENTIRE:   1.4286,
+    LossSpace.CONSTANT_BLEND_XN:        0.75,
+    LossSpace.CONSTANT_BLEND_XN_ENTIRE: 0.4286,
+    LossSpace.LINEAR_BLEND_XN:          1.3333,
+    LossSpace.LINEAR_BLEND_XN_ENTIRE:   2.1429,
+}
+
+
 class Transport:
 
     def __init__(
@@ -87,6 +102,7 @@ class Transport:
         train_eps,
         sample_eps,
         t_min=0.0,
+        scale_loss=False,
     ):
         path_options = {
             PathType.LINEAR: path.ICPlan,
@@ -102,6 +118,7 @@ class Transport:
         self.sample_eps = sample_eps
         # t_min: restrict training/sampling to [t_min, 1]; used by TM2T where t_min = m
         self.t_min = t_min
+        self.scale_loss = scale_loss
 
     def prior_logp(self, z):
         '''
@@ -349,7 +366,11 @@ class Transport:
                 terms['loss'] = mean_flat(weight * ((model_output - x0) ** 2))
             else:
                 terms['loss'] = mean_flat(weight * ((model_output * sigma_t + x0) ** 2))
-                
+
+        if self.scale_loss and self.model_type == ModelType.VELOCITY:
+            scale = VELOCITY_LOSS_SCALES.get(self.loss_space, 1.0)
+            terms['loss'] = terms['loss'] * scale
+
         return terms
     
 
