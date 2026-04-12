@@ -24,19 +24,19 @@
 
 # ── Experiment output ─────────────────────────────────────────────────────────
 experiment:
-  name: "perfromance_DiT_V_V"        # Results go to {experiments_base_dir}/{name}/
+  name: "perfromance_DiT_linear_blend_xv"        # Results go to {experiments_base_dir}/{name}/
   experiments_base_dir: "./experiment"
 
 
 # ── Checkpoint settings ───────────────────────────────────────────────────────
 checkpoint:
   # Directory containing XXXXXXX.pt checkpoint files
-  checkpoint_dir: "./results/SiT-XL-2-Linear-velocity-None-velocity-IS256-BS256-pretrained-1M/checkpoints/"
+  checkpoint_dir: "./results/048-SiT-XL-2-Linear-velocity-None-linear_blend_xv-IS256-BS256/checkpoints/"
 
   # List of training steps to evaluate.
   # Each entry must match a file: {checkpoint_dir}/{step:07d}.pt
   # Example: step 100000 → 0100000.pt
-  steps: [200000, 400000, 600000, 800000, 1000000]
+  steps: [100000, 200000, 400000, 600000]
 
   # true  → load ckpt["ema"]   (recommended: EMA weights give better FID)
   # false → load ckpt["model"] (raw training weights)
@@ -44,7 +44,7 @@ checkpoint:
 
   # true  → skip checkpoints whose .pt file is missing (warn and continue)
   # false → raise FileNotFoundError if any step file is missing
-  skip_missing: true
+  skip_missing: false
 
 
 # ── Optional model overrides ──────────────────────────────────────────────────
@@ -113,15 +113,15 @@ sampling:
   # Classifier-free guidance scale.
   # 1.0 = disabled (unconditional).
   # >1.0 = enabled (typical values: 1.5 – 4.0 for ImageNet).
-  cfg_scale: [1.0, 1.5, 2.0, 3.0, 4.0]
+  cfg_scale: [1.0, 1.5]
 
   # Number of ODE integration steps (for fixed-step solvers: euler, rk4).
   # Higher = better quality but slower. Typical: 250.
-  num_sampling_steps: 250
+  num_sampling_steps: 50
 
   # ODE solver: "euler" (fast, fixed-step), "rk4" (higher-order, fixed-step),
   # "dopri5" (adaptive, use with atol/rtol).
-  sampling_method: "dopri5"
+  sampling_method: "euler"
 
   # Tolerances for adaptive solvers (dopri5). Ignored for euler/rk4.
   atol: 1.0e-6

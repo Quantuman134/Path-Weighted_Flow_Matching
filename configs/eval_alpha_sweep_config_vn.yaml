@@ -6,16 +6,16 @@
 # (converted to velocity via score). alpha=0 → pure noise model, alpha=1 → pure velocity model.
 
 experiment:
-  name: "alpha_sweep_velocity_noise_1"
+  name: "alpha_sweep_vn"
   results_base_dir: "./experiment"
 
 vae: 'ema'  # 'ema' or 'mse'
 
 model1:                               # velocity predictor
-  ckpt: './results/SiT-S-2_64_velocity_pretrained/checkpoints/0430000.pt'  # REQUIRED
+  ckpt: './results/SiT-XL-2-Linear-velocity-None-velocity-IS256-BS256-pretrained-1M/checkpoints/0180000.pt'  # REQUIRED
   use_ema: true                        # true → load state["ema"], false → state["model"]
-  model: 'SiT-S/2'                    # architecture: SiT-XL/2, SiT-L/2, SiT-B/2, SiT-S/2
-  image_size: 64                       # 256 or 512
+  model: 'SiT-XL/2'                    # architecture: SiT-XL/2, SiT-L/2, SiT-B/2, SiT-S/2
+  image_size: 256                       # 256 or 512
   num_classes: 1000
   prediction: 'velocity'               # prediction type this model was trained with
   path_type: 'Linear'                  # 'Linear', 'GVP', or 'VP'
@@ -24,12 +24,12 @@ model1:                               # velocity predictor
   train_eps: null
 
 model2:                               # noise predictor
-  ckpt: ''                             # REQUIRED: path to noise-trained checkpoint
+  ckpt: './results/SiT-XL-2-Linear-velocity-None-noise-IS256-BS256-pretrained-1M/checkpoints/0430000.pt'                             # REQUIRED: path to noise-trained checkpoint
   use_ema: true
-  model: 'SiT-S/2'
-  image_size: 64
+  model: 'SiT-XL/2'
+  image_size: 256
   num_classes: 1000
-  prediction: 'noise'                  # noise model — noise_ode converts ε_hat to velocity
+  prediction: 'velocity'                  # noise model — noise_ode converts ε_hat to velocity
   path_type: 'Linear'
   loss_weight: null
   sample_eps: null
@@ -38,20 +38,20 @@ model2:                               # noise predictor
 eval:
   alpha_scheduler: null  # null → use alpha_list sweep; 'linear' → alpha(t) = 1-t
   alpha_list: [0.0, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 1.0]
-  num_images: 50000
+  num_images: 5000
   grid_samples: 256
-  batch_size: 2560
+  batch_size: 256
   seed: 85132
 
 data:
-  imagenet_val_path: '/data/hkzhang/imagenet_raw/val'
-  num_ref_images: 50000
+  imagenet_val_path: "/scratch/project/prj-02-visual-ai/hkzhang/ILSVRC/Data/CLS-LOC/val"
+  num_ref_images: 5000
 
 sampling:
-  cfg_scale: 4.0
+  cfg_scale: 1.0
   num_sampling_steps: 50
   sampling_method: 'euler'
   atol: 1.0e-6
   rtol: 1.0e-3
 
-device: 'cuda:3'
+device: 'cuda:0'

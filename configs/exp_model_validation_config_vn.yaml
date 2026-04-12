@@ -36,7 +36,7 @@ checkpoint:
   # List of training steps to evaluate.
   # Each entry must match a file: {checkpoint_dir}/{step:07d}.pt
   # Example: step 100000 → 0100000.pt
-  steps: [200000, 400000, 600000, 800000, 1000000]
+  steps: [100000, 200000, 400000, 600000, 800000, 1000000]
 
   # true  → load ckpt["ema"]   (recommended: EMA weights give better FID)
   # false → load ckpt["model"] (raw training weights)

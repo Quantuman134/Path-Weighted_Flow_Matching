@@ -20,13 +20,13 @@ transport:
   path_type: 'Linear'  # Path type: 'Linear', 'GVP', or 'VP'
   prediction: 'velocity' # Prediction type: 'velocity', 'score', or 'noise'
   loss_weight: null  # Loss weight: null, 'velocity', or 'likelihood'
-  loss_space: 'linear_blend_xv'  # Loss space: null=default, 'velocity', 'target', 'noise', 'min_snr', 'constant_blend_xv', 'linear_blend_xv'
+  loss_space: 'constant_blend_xv'  # Loss space: null=default, 'velocity', 'target', 'noise', 'min_snr', 'constant_blend_xv', 'linear_blend_xv'
   sample_eps: null  # Optional: Sampling epsilon (float)
   train_eps: null  # Optional: Training epsilon (float)
 
 # Training Settings
 training:
-  epochs: 3000  # Number of training epochs
+  epochs: 256  # Number of training epochs
   global_batch_size: 256  # Total batch size across all GPUs
   global_seed: 483  # Random seed for reproducibility
   num_workers: 20  # Number of data loading workers (increased for better GPU utilization)
@@ -53,6 +53,6 @@ sampling:
 
 # Checkpoint Settings
 checkpoint:
-  ckpt: ./results/018-SiT-XL-2-Linear-velocity-None-linear_blend-IS256-BS256/checkpoints/0290000.pt  # Optional: Path to checkpoint to resume training from
+  ckpt: ./results/035-SiT-XL-2-Linear-velocity-None-constant_blend-IS256-BS256/checkpoints/0940000.pt  # Optional: Path to checkpoint to resume training from
   
   # ckpt: null  # Optional: Path to checkpoint to resume training from
