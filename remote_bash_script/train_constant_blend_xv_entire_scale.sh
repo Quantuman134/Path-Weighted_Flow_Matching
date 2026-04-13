@@ -9,7 +9,7 @@ export OMP_NUM_THREADS=16  # 256 CPU cores / 2 GPUs = 128, using 16 for good bal
 
 # SiT Training Script
 # Configuration file path
-config_file="./configs/sit_config_linear_blend_xn_entire.yaml"
+config_file="./configs/sit_config_constant_blend_xv_entire_scale.yaml"
 
 # Number of GPUs to use
 NUM_GPUS=8

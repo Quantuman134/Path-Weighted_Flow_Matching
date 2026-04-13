@@ -79,14 +79,15 @@ VELOCITY_LOSS_SCALES = {
     LossSpace.VELOCITY:                 1.0,
     LossSpace.TARGET:                   3.0,
     LossSpace.NOISE:                    3.0,
-    LossSpace.CONSTANT_BLEND_XV:        0.5,
+    LossSpace.CONSTANT_BLEND_XV:        0.75,
     LossSpace.CONSTANT_BLEND_XV_ENTIRE: 0.4286,
-    LossSpace.LINEAR_BLEND_XV:          1.0,
+    LossSpace.LINEAR_BLEND_XV:          1.3333,
     LossSpace.LINEAR_BLEND_XV_ENTIRE:   1.4286,
-    LossSpace.CONSTANT_BLEND_XN:        0.75,
-    LossSpace.CONSTANT_BLEND_XN_ENTIRE: 0.4286,
-    LossSpace.LINEAR_BLEND_XN:          1.3333,
-    LossSpace.LINEAR_BLEND_XN_ENTIRE:   2.1429,
+    LossSpace.CONSTANT_BLEND_XN:        1.5,
+    LossSpace.CONSTANT_BLEND_XN_ENTIRE: 3.0,
+    LossSpace.LINEAR_BLEND_XN:          2.0,
+    LossSpace.LINEAR_BLEND_XN_ENTIRE:   3.0,
+    LossSpace.MIN_SNR:                  3.0,
 }
 
 
@@ -321,7 +322,7 @@ class Transport:
             denom = d_alpha_t * sigma_t - d_sigma_t * alpha_t
             x1_hat = (sigma_t * model_output - d_sigma_t * xt) / (denom + 1e-8)
             t_ = path.expand_t_like_x(t, xt)
-            weight = (1 + t_ / (1 - t_ + 1e-8)) ** 2
+            weight = (1 - t_ / (1 - t_ + 1e-8)) ** 2
             terms['loss'] = mean_flat(weight * ((x1_hat - x1) ** 2))
         elif self.model_type == ModelType.VELOCITY and self.loss_space == LossSpace.LINEAR_BLEND_XN_ENTIRE:
             # weight = (1-t + t*(t/(1-t)))^2
@@ -330,7 +331,7 @@ class Transport:
             denom = d_alpha_t * sigma_t - d_sigma_t * alpha_t
             x1_hat = (sigma_t * model_output - d_sigma_t * xt) / (denom + 1e-8)
             t_ = path.expand_t_like_x(t, xt)
-            weight = (1 - t_ + t_ * (t_ / (1 - t_ + 1e-8))) ** 2
+            weight = (1 - t_ - t_ * (t_ / (1 - t_ + 1e-8))) ** 2
             terms['loss'] = mean_flat(weight * ((x1_hat - x1) ** 2))
         elif self.model_type == ModelType.VELOCITY and self.loss_space == LossSpace.CONSTANT_BLEND_VN_ENTIRE:
             # weight = (1/(1-t) + t/(1-t))^2

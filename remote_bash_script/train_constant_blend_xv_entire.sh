@@ -12,7 +12,7 @@ export OMP_NUM_THREADS=16  # 256 CPU cores / 2 GPUs = 128, using 16 for good bal
 config_file="./configs/sit_config_constant_blend_xv_entire.yaml"
 
 # Number of GPUs to use
-NUM_GPUS=4
+NUM_GPUS=8
 
 # Run training with torchrun (PyTorch distributed)
 MASTER_PORT=$(python -c "import socket; s=socket.socket(); s.bind(('',0)); print(s.getsockname()[1]); s.close()")

@@ -53,6 +53,6 @@ sampling:
 
 # Checkpoint Settings
 checkpoint:
-  ckpt: ./results/054-SiT-XL-2-Linear-velocity-None-velocity-IS256-BS256/checkpoints/0270000.pt  # Optional: Path to checkpoint to resume training from
+  ckpt: ./results/059-SiT-XL-2-Linear-velocity-None-velocity-IS256-BS256/checkpoints/0540000.pt  # Optional: Path to checkpoint to resume training from
   
   # ckpt: null  # Optional: Path to checkpoint to resume training from
