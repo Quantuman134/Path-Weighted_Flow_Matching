@@ -6,7 +6,7 @@ export OMP_NUM_THREADS=16  # 256 CPU cores / 2 GPUs = 128, using 16 for good bal
 
 # SiT Training Script
 # Configuration file path
-config_file="./configs/sit_config.yaml"
+config_file="./configs/sit_config_vt.yaml"
 
 # Number of GPUs to use
 NUM_GPUS=8

@@ -385,6 +385,7 @@ def main(args):
         experiment_name = (
             f"{experiment_index:03d}-TM2T-{model_string_name}-"
             f"{args.path_type}-{args.prediction}-{args.loss_space}-tmin{args.t_min}"
+            f"-IS{args.image_size}-BS{args.global_batch_size}"
         )
         experiment_dir = f"{args.results_dir}/{experiment_name}"
         checkpoint_dir = f"{experiment_dir}/checkpoints"

@@ -34,8 +34,14 @@ import wandb_utils
 try:
     from FID import compute_fid
 except ImportError:
-    print('Warning: FID module not found. Validation will not be available.')
+    print('Warning: FID module not found. FID validation will not be available.')
     compute_fid = None
+
+try:
+    from IS import compute_is
+except ImportError:
+    print('Warning: IS module not found. IS validation will not be available.')
+    compute_is = None
 
 
 #################################################################################
@@ -83,8 +89,9 @@ def config_to_args(config):
     args.loss_space = config['transport'].get('loss_space', None)
     args.sample_eps = config['transport'].get('sample_eps', None)
     args.train_eps = config['transport'].get('train_eps', None)
-    
+
     # Training settings
+    args.scale_enable = bool(config['training'].get('scale_enable', False))
     args.epochs = int(config['training']['epochs'])
     args.global_batch_size = int(config['training']['global_batch_size'])
     args.global_seed = int(config['training']['global_seed'])
@@ -181,7 +188,7 @@ def center_crop_arr(pil_image, image_size):
 
 
 @torch.no_grad()
-def validate_fid(ema_model, vae, val_loader, transport_sampler, args, device, rank, logger):
+def validate_metrics(ema_model, vae, val_loader, transport_sampler, args, device, rank, logger):
     """
     Compute FID score on validation set.
     
@@ -200,7 +207,7 @@ def validate_fid(ema_model, vae, val_loader, transport_sampler, args, device, ra
     """
     if compute_fid is None:
         logger.info('FID computation not available. Skipping validation.')
-        return None, None
+        return None, None, None, None
     
     ema_model.eval()
     latent_size = args.image_size // 8
@@ -285,8 +292,10 @@ def validate_fid(ema_model, vae, val_loader, transport_sampler, args, device, ra
     dist.all_gather(all_gen_list, generated_images)
     dist.all_gather(all_labels_list, labels)
     
-    # Compute FID only on rank 0
+    # Compute FID and IS only on rank 0
     fid_score = None
+    is_mean = None
+    is_std = None
     sample_images = None
     if rank == 0:
         # Concatenate all gathered tensors
@@ -321,12 +330,19 @@ def validate_fid(ema_model, vae, val_loader, transport_sampler, args, device, ra
         # FID computation expects 'cuda' or 'cpu' as device string
         # device parameter is an int (GPU ID) in distributed training
         fid_device = 'cuda' if isinstance(device, int) or (hasattr(device, 'type') and device.type == 'cuda') else 'cpu'
-        fid_score = compute_fid(all_real_images.cpu(), all_generated_images.cpu(), 
+        fid_score = compute_fid(all_real_images.cpu(), all_generated_images.cpu(),
                                batch_size=32, device=fid_device)
         logger.info(f'Validation FID Score: {fid_score:.4f}')
-    
+
+        # IS is computed on generated images only (real images not needed)
+        if compute_is is not None:
+            logger.info('Computing IS score...')
+            is_mean, is_std = compute_is(all_generated_images.cpu(),
+                                         batch_size=32, device=fid_device, splits=10)
+            logger.info(f'Validation IS Score: {is_mean:.4f} ± {is_std:.4f}')
+
     dist.barrier()
-    return fid_score, sample_images
+    return fid_score, is_mean, is_std, sample_images
 
 
 #################################################################################
@@ -355,8 +371,11 @@ def main(args):
         os.makedirs(args.results_dir, exist_ok=True)  # Make results folder (holds all experiment subfolders)
         experiment_index = len(glob(f"{args.results_dir}/*"))
         model_string_name = args.model.replace("/", "-")  # e.g., SiT-XL/2 --> SiT-XL-2 (for naming folders)
+        if args.scale_enable:
+            model_string_name = model_string_name + "-scaled"
         experiment_name = f"{experiment_index:03d}-{model_string_name}-" \
-                        f"{args.path_type}-{args.prediction}-{args.loss_weight}-{args.loss_space}"
+                        f"{args.path_type}-{args.prediction}-{args.loss_weight}-{args.loss_space}" \
+                        f"-IS{args.image_size}-BS{args.global_batch_size}"
         experiment_dir = f"{args.results_dir}/{experiment_name}"  # Create an experiment folder
         checkpoint_dir = f"{experiment_dir}/checkpoints"  # Stores saved model checkpoints
         os.makedirs(checkpoint_dir, exist_ok=True)
@@ -399,7 +418,8 @@ def main(args):
         args.loss_weight,
         args.loss_space,
         args.train_eps,
-        args.sample_eps
+        args.sample_eps,
+        scale_loss=args.scale_enable,
     )  # default: velocity;
     transport_sampler = Sampler(transport)
     vae = AutoencoderKL.from_pretrained(f"stabilityai/sd-vae-ft-{args.vae}").to(device)
@@ -592,9 +612,15 @@ def main(args):
                 # Run validation if validation data is provided
                 if val_loader is not None:
                     logger.info("Running validation...")
-                    fid_score, sample_images = validate_fid(ema, vae, val_loader, transport_sampler, args, device, rank, logger)
+                    fid_score, is_mean, is_std, sample_images = validate_metrics(
+                        ema, vae, val_loader, transport_sampler, args, device, rank, logger
+                    )
                     if rank == 0 and fid_score is not None and args.wandb:
-                        wandb_utils.log({"validation/FID": fid_score}, step=train_steps)
+                        log_dict = {"validation/FID": fid_score}
+                        if is_mean is not None:
+                            log_dict["validation/IS_mean"] = is_mean
+                            log_dict["validation/IS_std"] = is_std
+                        wandb_utils.log(log_dict, step=train_steps)
                     if rank == 0 and sample_images is not None and args.wandb:
                         wandb_utils.log_validation_images(
                             sample_images['real'], 

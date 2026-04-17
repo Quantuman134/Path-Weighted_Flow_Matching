@@ -20,18 +20,18 @@ transport:
   path_type: 'Linear'  # Path type: 'Linear', 'GVP', or 'VP'
   prediction: 'velocity' # Prediction type: 'velocity', 'score', or 'noise'
   loss_weight: null  # Loss weight: null, 'velocity', or 'likelihood'
-  loss_space: 'linear_blend_xv'  # Loss space: null=default, 'velocity', 'target', 'noise', 'min_snr', 'constant_blend_xv', 'linear_blend_xv'
+  loss_space: 'linear_blend_xv_entire'  # Loss space: null=default, 'velocity', 'target', 'noise', 'min_snr', 'constant_blend_xv', 'linear_blend_xv'
   sample_eps: null  # Optional: Sampling epsilon (float)
   train_eps: null  # Optional: Training epsilon (float)
 
 # Training Settings
 training:
-  epochs: 3000  # Number of training epochs
+  epochs: 256  # Number of training epochs
   global_batch_size: 256  # Total batch size across all GPUs
   global_seed: 483  # Random seed for reproducibility
   num_workers: 20  # Number of data loading workers (increased for better GPU utilization)
-  scale_enable: false  # Enable loss scaling for velocity prediction model
-
+  scale_enable: true  # Enable loss scaling for velocity prediction model
+  
 # Logging Settings
 logging:
   results_dir: 'results'  # Directory to save results
@@ -46,7 +46,7 @@ logging:
 # Validation Settings
 validation:
   val_num_samples: 5000  # Number of samples to use for validation
-  val_log_images: 256  # Number of validation images to log to wandb
+  val_log_images: 256 # Number of validation images to log to wandb
 
 # Sampling Settings
 sampling:
@@ -54,6 +54,6 @@ sampling:
 
 # Checkpoint Settings
 checkpoint:
-  ckpt: ./results/018-SiT-XL-2-Linear-velocity-None-linear_blend-IS256-BS256/checkpoints/0290000.pt  # Optional: Path to checkpoint to resume training from
+  # ckpt: ./results/058-SiT-XL-2-Linear-velocity-None-linear_blend_xv_entire-IS256-BS256/checkpoints/0610000.pt  # Optional: Path to checkpoint to resume training from
   
-  # ckpt: null  # Optional: Path to checkpoint to resume training from
+  ckpt: null  # Optional: Path to checkpoint to resume training from

@@ -8,6 +8,7 @@ def create_transport(
     train_eps=None,
     sample_eps=None,
     t_min=0.0,
+    scale_loss=False,
 ):
     """function for creating Transport object
     **Note**: model prediction defaults to velocity
@@ -41,6 +42,34 @@ def create_transport(
         loss_space_type = LossSpace.VELOCITY
     elif loss_space == "target":
         loss_space_type = LossSpace.TARGET
+    elif loss_space == "noise":
+        loss_space_type = LossSpace.NOISE
+    elif loss_space == "min_snr":
+        loss_space_type = LossSpace.MIN_SNR
+    elif loss_space == "constant_blend_xv":
+        loss_space_type = LossSpace.CONSTANT_BLEND_XV
+    elif loss_space == "linear_blend_xv":
+        loss_space_type = LossSpace.LINEAR_BLEND_XV
+    elif loss_space == "constant_blend_xn":
+        loss_space_type = LossSpace.CONSTANT_BLEND_XN
+    elif loss_space == "linear_blend_xn":
+        loss_space_type = LossSpace.LINEAR_BLEND_XN
+    elif loss_space == "constant_blend_vn":
+        loss_space_type = LossSpace.CONSTANT_BLEND_VN
+    elif loss_space == "linear_blend_vn":
+        loss_space_type = LossSpace.LINEAR_BLEND_VN
+    elif loss_space == "constant_blend_xv_entire":
+        loss_space_type = LossSpace.CONSTANT_BLEND_XV_ENTIRE
+    elif loss_space == "linear_blend_xv_entire":
+        loss_space_type = LossSpace.LINEAR_BLEND_XV_ENTIRE
+    elif loss_space == "constant_blend_xn_entire":
+        loss_space_type = LossSpace.CONSTANT_BLEND_XN_ENTIRE
+    elif loss_space == "linear_blend_xn_entire":
+        loss_space_type = LossSpace.LINEAR_BLEND_XN_ENTIRE
+    elif loss_space == "constant_blend_vn_entire":
+        loss_space_type = LossSpace.CONSTANT_BLEND_VN_ENTIRE
+    elif loss_space == "linear_blend_vn_entire":
+        loss_space_type = LossSpace.LINEAR_BLEND_VN_ENTIRE
     else:
         # default: match model type
         loss_space_type = LossSpace.TARGET if model_type == ModelType.TARGET else LossSpace.VELOCITY
@@ -74,6 +103,7 @@ def create_transport(
         train_eps=train_eps,
         sample_eps=sample_eps,
         t_min=t_min,
+        scale_loss=scale_loss,
     )
     
     return state

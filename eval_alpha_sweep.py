@@ -4,8 +4,16 @@ Alpha-sweep evaluation for velocity-blended SiT.
 For each alpha in alpha_list:
   At every ODE step, both models are queried and their velocity predictions blended:
     v_t = alpha * v1_t + (1 - alpha) * v2_t
-  where model1 predicts target (x1_hat, converted to velocity) and
-  model2 predicts velocity directly.
+  where model1 and model2 can use any supported prediction type (target, velocity,
+  noise, score) — each model's drift function handles the conversion to velocity
+  internally.
+
+Supported blend combinations (set via config prediction fields):
+  target   + velocity  (default)
+  target   + noise
+  velocity + noise
+  velocity + velocity
+  (and any other combination of the four prediction types)
 
 Output: FID-vs-alpha curve + grid images saved under ./experiment/<name>/
 """
@@ -20,6 +28,7 @@ import sys
 import matplotlib.pyplot as plt
 import numpy as np
 import torch
+import torch.distributed as dist
 import yaml
 from diffusers.models import AutoencoderKL
 from scipy.linalg import sqrtm
@@ -31,6 +40,7 @@ if _SIT_DIR not in sys.path:
     sys.path.insert(0, _SIT_DIR)
 
 from FID import get_inception_features
+from IS import get_inception_probs, compute_is_from_probs
 from models import SiT_models
 from transport import Sampler, create_transport
 
@@ -297,6 +307,22 @@ def plot_fid_curve(fid_results: dict, save_path: str):
     print(f"Saved FID curve → {save_path}")
 
 
+def plot_is_curve(is_results: dict, save_path: str):
+    alphas = sorted(is_results.keys())
+    means  = [is_results[a]["mean"] for a in alphas]
+    stds   = [is_results[a]["std"]  for a in alphas]
+    plt.figure(figsize=(8, 5))
+    plt.errorbar(alphas, means, yerr=stds, marker="o", linewidth=2, capsize=4)
+    plt.xlabel("α  (blend weight for model1 target→velocity)")
+    plt.ylabel("IS (Inception Score)")
+    plt.title("IS vs Blend Weight α\n(α=0: pure velocity model,  α=1: pure target model)")
+    plt.grid(True, alpha=0.4)
+    plt.tight_layout()
+    plt.savefig(save_path, dpi=150)
+    plt.close()
+    print(f"Saved IS curve  → {save_path}")
+
+
 # ─── Main ────────────────────────────────────────────────────────────────────
 
 def main():
@@ -308,28 +334,45 @@ def main():
                         help="Override device from config (e.g. cuda:1)")
     args = parser.parse_args()
 
-    cfg    = load_config(args.config)
-    device = args.device or cfg.get("device", "cuda")
+    cfg = load_config(args.config)
 
-    # ── Experiment directory ──────────────────────────────────────────────────
+    # ── Distributed init (falls back to single-GPU when not launched via torchrun) ──
+    try:
+        rank       = int(os.environ["RANK"])
+        world_size = int(os.environ["WORLD_SIZE"])
+        local_rank = int(os.environ["LOCAL_RANK"])
+        dist.init_process_group("nccl")
+        device  = f"cuda:{local_rank}"
+        is_dist = True
+    except KeyError:
+        rank, world_size, local_rank = 0, 1, 0
+        device  = args.device or cfg.get("device", "cuda")
+        is_dist = False
+
+    # ── Experiment directory (rank 0 creates; others wait) ───────────────────
     exp_dir    = os.path.join(cfg["experiment"]["results_base_dir"],
                               cfg["experiment"]["name"])
     images_dir = os.path.join(exp_dir, "images")
-    os.makedirs(images_dir, exist_ok=True)
-
-    shutil.copy(args.config, os.path.join(exp_dir, "config.yaml"))
-    print(f"Experiment dir: {exp_dir}")
+    if rank == 0:
+        os.makedirs(images_dir, exist_ok=True)
+        shutil.copy(args.config, os.path.join(exp_dir, "config.yaml"))
+        print(f"Experiment dir: {exp_dir}")
+    if is_dist:
+        dist.barrier()
 
     seed = cfg["eval"].get("seed", 0)
-    torch.manual_seed(seed)
+    torch.manual_seed(seed * world_size + rank)   # unique noise per rank
     torch.set_grad_enabled(False)
 
     # ── Load models ───────────────────────────────────────────────────────────
-    print("\nLoading Model 1 (target predictor)...")
+    pred1 = cfg["model1"].get("prediction", "velocity")
+    pred2 = cfg["model2"].get("prediction", "velocity")
+
+    print(f"\nLoading Model 1 ({pred1} predictor)...")
     model1   = load_sit_model(cfg["model1"], device)
     sampler1 = build_sampler(cfg["model1"])
 
-    print("Loading Model 2 (velocity predictor)...")
+    print(f"Loading Model 2 ({pred2} predictor)...")
     model2   = load_sit_model(cfg["model2"], device)
     sampler2 = build_sampler(cfg["model2"])
 
@@ -340,81 +383,141 @@ def main():
     vae = AutoencoderKL.from_pretrained(f"stabilityai/sd-vae-ft-{vae_name}").to(device)
     print(f"Loaded VAE (sd-vae-ft-{vae_name})")
 
-    # ── Reference features (computed once) ────────────────────────────────────
+    # ── Reference features (rank 0 only — not needed on workers) ────────────
     batch_size = cfg["eval"]["batch_size"]
     image_size = cfg["model1"]["image_size"]
     num_ref    = cfg["data"]["num_ref_images"]
-    print(f"\nBuilding reference features from {cfg['data']['imagenet_val_path']} ...")
-    ref_features = get_reference_features(
-        cfg["data"]["imagenet_val_path"],
-        num_ref, image_size, batch_size, device, seed=seed,
-    )
+    if rank == 0:
+        print(f"\nBuilding reference features from {cfg['data']['imagenet_val_path']} ...")
+        ref_features = get_reference_features(
+            cfg["data"]["imagenet_val_path"],
+            num_ref, image_size, batch_size, device, seed=seed,
+        )
+    else:
+        ref_features = None
 
     # ── Class labels (balanced across all classes) ────────────────────────────
     num_images  = cfg["eval"]["num_images"]
     num_classes = cfg["model1"]["num_classes"]
     all_labels  = make_balanced_labels(num_images, num_classes, seed=seed)
+    rank_labels = all_labels[rank::world_size]   # each rank generates its shard
 
     latent_size = image_size // 8
 
+    # ── Pre-load Inception v3 for IS (rank 0 only — used after gather) ───────
+    from torchvision import models as tv_models
+    if rank == 0:
+        print("\nPre-loading Inception v3 for IS computation...")
+        inception_for_is = tv_models.inception_v3(weights=tv_models.Inception_V3_Weights.DEFAULT)
+        inception_for_is.aux_logits = False
+        inception_for_is.eval().to(device)
+    else:
+        inception_for_is = None
+
     # ── Alpha sweep / scheduler ───────────────────────────────────────────────
     fid_results: dict = {}
+    is_results: dict = {}
     scheduler_type = cfg["eval"].get("alpha_scheduler", None)
     alpha_fn = build_alpha_fn(scheduler_type)
+
+    def _gather_images(local_images: torch.Tensor) -> torch.Tensor:
+        """Gather per-rank image tensors to rank 0; returns full tensor on rank 0, None elsewhere."""
+        if not is_dist:
+            return local_images
+        local_np = local_images.numpy()   # float32, already on CPU
+        gather_list = [None] * world_size if rank == 0 else None
+        dist.gather_object(local_np, gather_list, dst=0)
+        if rank == 0:
+            return torch.from_numpy(np.concatenate(gather_list, axis=0))
+        return None
 
     if alpha_fn is not None:
         # ── Scheduler mode: single run ────────────────────────────────────────
         label = f"scheduler_{scheduler_type}"
-        print(f"\n{'─'*50}")
-        print(f" alpha scheduler = {scheduler_type}")
-        print(f"{'─'*50}")
+        if rank == 0:
+            print(f"\n{'─'*50}")
+            print(f" alpha scheduler = {scheduler_type}")
+            print(f"{'─'*50}")
 
         gen_images = generate_for_alpha(
             alpha_fn, model1, model2, sampler1, sampler2, blend_sampler, vae,
-            all_labels, cfg["sampling"], batch_size, latent_size, device,
+            rank_labels, cfg["sampling"], batch_size, latent_size, device,
         )
+        gen_images = _gather_images(gen_images)
 
-        print("  Extracting Inception features for FID...")
-        gen_features = get_inception_features(gen_images, batch_size=batch_size, device=device)
-        fid = compute_fid(gen_features, ref_features)
-        fid_results[label] = fid
-        print(f"  FID = {fid:.4f}")
-
-        grid_path = os.path.join(images_dir, f"grid_{label}.png")
-        save_grid(gen_images, cfg["eval"]["grid_samples"], grid_path)
-    else:
-        # ── Constant alpha sweep (original behavior) ──────────────────────────
-        alpha_list = cfg["eval"]["alpha_list"]
-
-        for alpha in alpha_list:
-            print(f"\n{'─'*50}")
-            print(f" alpha = {alpha:.2f}")
-            print(f"{'─'*50}")
-
-            gen_images = generate_for_alpha(
-                alpha, model1, model2, sampler1, sampler2, blend_sampler, vae,
-                all_labels, cfg["sampling"], batch_size, latent_size, device,
-            )
-
+        if rank == 0:
             print("  Extracting Inception features for FID...")
             gen_features = get_inception_features(gen_images, batch_size=batch_size, device=device)
             fid = compute_fid(gen_features, ref_features)
-            fid_results[alpha] = fid
+            fid_results[label] = fid
             print(f"  FID = {fid:.4f}")
 
-            alpha_str = f"{alpha:.2f}".replace(".", "_")
-            grid_path = os.path.join(images_dir, f"grid_alpha_{alpha_str}.png")
+            print("  Extracting Inception probs for IS...")
+            gen_probs = get_inception_probs(gen_images, batch_size=batch_size, device=device, model=inception_for_is)
+            is_mean, is_std = compute_is_from_probs(gen_probs, splits=10)
+            is_results[label] = {"mean": is_mean, "std": is_std}
+            print(f"  IS  = {is_mean:.4f} ± {is_std:.4f}")
+
+            grid_path = os.path.join(images_dir, f"grid_{label}.png")
             save_grid(gen_images, cfg["eval"]["grid_samples"], grid_path)
 
-    # ── Save results ──────────────────────────────────────────────────────────
-    json_path = os.path.join(exp_dir, "fid_results.json")
-    with open(json_path, "w") as f:
-        json.dump({str(k): v for k, v in sorted(fid_results.items())}, f, indent=2)
-    print(f"\nSaved FID results → {json_path}")
+        if is_dist:
+            dist.barrier()
+    else:
+        # ── Constant alpha sweep ──────────────────────────────────────────────
+        alpha_list = cfg["eval"]["alpha_list"]
 
-    if alpha_fn is None:
-        plot_fid_curve(fid_results, os.path.join(exp_dir, "fid_curve.png"))
-    print("\nDone.")
+        for alpha in alpha_list:
+            if rank == 0:
+                print(f"\n{'─'*50}")
+                print(f" alpha = {alpha:.2f}")
+                print(f"{'─'*50}")
+
+            gen_images = generate_for_alpha(
+                alpha, model1, model2, sampler1, sampler2, blend_sampler, vae,
+                rank_labels, cfg["sampling"], batch_size, latent_size, device,
+            )
+            gen_images = _gather_images(gen_images)
+
+            if rank == 0:
+                print("  Extracting Inception features for FID...")
+                gen_features = get_inception_features(gen_images, batch_size=batch_size, device=device)
+                fid = compute_fid(gen_features, ref_features)
+                fid_results[alpha] = fid
+                print(f"  FID = {fid:.4f}")
+
+                print("  Extracting Inception probs for IS...")
+                gen_probs = get_inception_probs(gen_images, batch_size=batch_size, device=device, model=inception_for_is)
+                is_mean, is_std = compute_is_from_probs(gen_probs, splits=10)
+                is_results[alpha] = {"mean": is_mean, "std": is_std}
+                print(f"  IS  = {is_mean:.4f} ± {is_std:.4f}")
+
+                alpha_str = f"{alpha:.2f}".replace(".", "_")
+                grid_path = os.path.join(images_dir, f"grid_alpha_{alpha_str}.png")
+                save_grid(gen_images, cfg["eval"]["grid_samples"], grid_path)
+
+            if is_dist:
+                dist.barrier()
+
+    # ── Save results (rank 0 only) ────────────────────────────────────────────
+    if rank == 0:
+        json_path = os.path.join(exp_dir, "fid_results.json")
+        with open(json_path, "w") as f:
+            json.dump({str(k): v for k, v in sorted(fid_results.items())}, f, indent=2)
+        print(f"\nSaved FID results → {json_path}")
+
+        is_json_path = os.path.join(exp_dir, "is_results.json")
+        with open(is_json_path, "w") as f:
+            json.dump({str(k): v for k, v in sorted(is_results.items())}, f, indent=2)
+        print(f"Saved IS results  → {is_json_path}")
+
+        if alpha_fn is None:
+            plot_fid_curve(fid_results, os.path.join(exp_dir, "fid_curve.png"))
+            plot_is_curve(is_results, os.path.join(exp_dir, "is_curve.png"))
+        print("\nDone.")
+
+    if is_dist:
+        dist.destroy_process_group()
 
 
 if __name__ == "__main__":

@@ -39,12 +39,56 @@ class WeightType(enum.Enum):
 class LossSpace(enum.Enum):
     """
     Which space to compute the training loss in.
-    VELOCITY: loss on predicted velocity vs ground-truth velocity
-    TARGET: loss on predicted x1 vs ground-truth x1
+    VELOCITY:                 loss on predicted velocity vs ground-truth velocity
+    TARGET:                   loss on predicted x1 vs ground-truth x1
+    NOISE:                    velocity → x1_hat, weight = (alpha_t/sigma_t)^2 = t^2/(1-t)^2 (linear path)
+    MIN_SNR:                  velocity → x1_hat, weight = min((alpha_t/sigma_t)^2, 5)
+    CONSTANT_BLEND_XV:        velocity → x1_hat, weight = 1 + 1/(1-t)^2
+    LINEAR_BLEND_XV:          velocity → x1_hat, weight = (1-t) + t/(1-t)^2
+    CONSTANT_BLEND_XN:        velocity → x1_hat, weight = 1 + (t/(1-t))^2
+    LINEAR_BLEND_XN:          velocity → x1_hat, weight = (1-t) + t*(t/(1-t))^2
+    CONSTANT_BLEND_VN:        velocity → x1_hat, weight = (1/(1-t))^2 + (t/(1-t))^2
+    LINEAR_BLEND_VN:          velocity → x1_hat, weight = (1-t)*(1/(1-t))^2 + t*(t/(1-t))^2
+    CONSTANT_BLEND_XV_ENTIRE: velocity → x1_hat, weight = (1 + 1/(1-t))^2
+    LINEAR_BLEND_XV_ENTIRE:   velocity → x1_hat, weight = ((1-t) + t/(1-t))^2
+    CONSTANT_BLEND_XN_ENTIRE: velocity → x1_hat, weight = (1 + t/(1-t))^2
+    LINEAR_BLEND_XN_ENTIRE:   velocity → x1_hat, weight = (1-t + t*(t/(1-t)))^2
+    CONSTANT_BLEND_VN_ENTIRE: velocity → x1_hat, weight = (1/(1-t) + t/(1-t))^2
+    LINEAR_BLEND_VN_ENTIRE:   velocity → x1_hat, weight = (1 + t*(t/(1-t)))^2
     """
 
     VELOCITY = enum.auto()
     TARGET = enum.auto()
+    NOISE = enum.auto()
+    MIN_SNR = enum.auto()
+    CONSTANT_BLEND_XV = enum.auto()
+    LINEAR_BLEND_XV = enum.auto()
+    CONSTANT_BLEND_XN = enum.auto()
+    LINEAR_BLEND_XN = enum.auto()
+    CONSTANT_BLEND_VN = enum.auto()
+    LINEAR_BLEND_VN = enum.auto()
+    CONSTANT_BLEND_XV_ENTIRE = enum.auto()
+    LINEAR_BLEND_XV_ENTIRE = enum.auto()
+    CONSTANT_BLEND_XN_ENTIRE = enum.auto()
+    LINEAR_BLEND_XN_ENTIRE = enum.auto()
+    CONSTANT_BLEND_VN_ENTIRE = enum.auto()
+    LINEAR_BLEND_VN_ENTIRE = enum.auto()
+
+
+VELOCITY_LOSS_SCALES = {
+    LossSpace.VELOCITY:                 1.0,
+    LossSpace.TARGET:                   3.0,
+    LossSpace.NOISE:                    3.0,
+    LossSpace.CONSTANT_BLEND_XV:        0.75,
+    LossSpace.CONSTANT_BLEND_XV_ENTIRE: 0.4286,
+    LossSpace.LINEAR_BLEND_XV:          1.3333,
+    LossSpace.LINEAR_BLEND_XV_ENTIRE:   1.4286,
+    LossSpace.CONSTANT_BLEND_XN:        1.5,
+    LossSpace.CONSTANT_BLEND_XN_ENTIRE: 3.0,
+    LossSpace.LINEAR_BLEND_XN:          2.0,
+    LossSpace.LINEAR_BLEND_XN_ENTIRE:   3.0,
+    LossSpace.MIN_SNR:                  3.0,
+}
 
 
 class Transport:
@@ -59,6 +103,7 @@ class Transport:
         train_eps,
         sample_eps,
         t_min=0.0,
+        scale_loss=False,
     ):
         path_options = {
             PathType.LINEAR: path.ICPlan,
@@ -74,6 +119,7 @@ class Transport:
         self.sample_eps = sample_eps
         # t_min: restrict training/sampling to [t_min, 1]; used by TM2T where t_min = m
         self.t_min = t_min
+        self.scale_loss = scale_loss
 
     def prior_logp(self, z):
         '''
@@ -178,6 +224,133 @@ class Transport:
             x0_hat = (xt - alpha_t * model_output) / (sigma_t + 1e-8)
             v_hat = d_alpha_t * model_output + d_sigma_t * x0_hat
             terms['loss'] = mean_flat(((v_hat - ut) ** 2))
+        elif self.model_type == ModelType.VELOCITY and self.loss_space == LossSpace.NOISE:
+            # velocity model, noise loss: convert predicted v → x1_hat, then apply (alpha_t/sigma_t)^2 weight
+            # noise_loss = (alpha_t/sigma_t)^2 * target_loss; for linear path = t^2/(1-t)^2 * target_loss
+            alpha_t, d_alpha_t = self.path_sampler.compute_alpha_t(path.expand_t_like_x(t, xt))
+            sigma_t, d_sigma_t = self.path_sampler.compute_sigma_t(path.expand_t_like_x(t, xt))
+            denom = d_alpha_t * sigma_t - d_sigma_t * alpha_t
+            x1_hat = (sigma_t * model_output - d_sigma_t * xt) / (denom + 1e-8)
+            weight = (alpha_t / (sigma_t + 1e-8)) ** 2
+            terms['loss'] = mean_flat(weight * ((x1_hat - x1) ** 2))
+        elif self.model_type == ModelType.VELOCITY and self.loss_space == LossSpace.MIN_SNR:
+            # velocity model, Min-SNR-5 loss: same as noise loss but SNR weight clamped at gamma=5
+            # weight = min((alpha_t/sigma_t)^2, 5)
+            alpha_t, d_alpha_t = self.path_sampler.compute_alpha_t(path.expand_t_like_x(t, xt))
+            sigma_t, d_sigma_t = self.path_sampler.compute_sigma_t(path.expand_t_like_x(t, xt))
+            denom = d_alpha_t * sigma_t - d_sigma_t * alpha_t
+            x1_hat = (sigma_t * model_output - d_sigma_t * xt) / (denom + 1e-8)
+            weight = th.clamp((alpha_t / (sigma_t + 1e-8)) ** 2, max=5)
+            terms['loss'] = mean_flat(weight * ((x1_hat - x1) ** 2))
+        elif self.model_type == ModelType.VELOCITY and self.loss_space == LossSpace.CONSTANT_BLEND_XV:
+            # velocity model, constant_blend_xv loss: weight = 1 + 1/(1-t)^2
+            alpha_t, d_alpha_t = self.path_sampler.compute_alpha_t(path.expand_t_like_x(t, xt))
+            sigma_t, d_sigma_t = self.path_sampler.compute_sigma_t(path.expand_t_like_x(t, xt))
+            denom = d_alpha_t * sigma_t - d_sigma_t * alpha_t
+            x1_hat = (sigma_t * model_output - d_sigma_t * xt) / (denom + 1e-8)
+            t_ = path.expand_t_like_x(t, xt)
+            weight = 1 + 1 / ((1 - t_) ** 2 + 1e-8)
+            terms['loss'] = mean_flat(weight * ((x1_hat - x1) ** 2))
+        elif self.model_type == ModelType.VELOCITY and self.loss_space == LossSpace.LINEAR_BLEND_XV:
+            # velocity model, linear_blend_xv loss: weight = (1-t) + t/(1-t)^2
+            alpha_t, d_alpha_t = self.path_sampler.compute_alpha_t(path.expand_t_like_x(t, xt))
+            sigma_t, d_sigma_t = self.path_sampler.compute_sigma_t(path.expand_t_like_x(t, xt))
+            denom = d_alpha_t * sigma_t - d_sigma_t * alpha_t
+            x1_hat = (sigma_t * model_output - d_sigma_t * xt) / (denom + 1e-8)
+            t_ = path.expand_t_like_x(t, xt)
+            # weight = th.clamp((1 - t_) + t_ / ((1 - t_) ** 2 + 1e-8), max=5) # + min_snr
+            weight = (1 - t_) + t_ / ((1 - t_) ** 2 + 1e-8)
+            terms['loss'] = mean_flat(weight * ((x1_hat - x1) ** 2))
+        elif self.model_type == ModelType.VELOCITY and self.loss_space == LossSpace.CONSTANT_BLEND_XN:
+            # weight = 1 + (t/(1-t))^2
+            alpha_t, d_alpha_t = self.path_sampler.compute_alpha_t(path.expand_t_like_x(t, xt))
+            sigma_t, d_sigma_t = self.path_sampler.compute_sigma_t(path.expand_t_like_x(t, xt))
+            denom = d_alpha_t * sigma_t - d_sigma_t * alpha_t
+            x1_hat = (sigma_t * model_output - d_sigma_t * xt) / (denom + 1e-8)
+            t_ = path.expand_t_like_x(t, xt)
+            weight = 1 + (t_ / (1 - t_ + 1e-8)) ** 2
+            terms['loss'] = mean_flat(weight * ((x1_hat - x1) ** 2))
+        elif self.model_type == ModelType.VELOCITY and self.loss_space == LossSpace.LINEAR_BLEND_XN:
+            # weight = (1-t) + t*(t/(1-t))^2
+            alpha_t, d_alpha_t = self.path_sampler.compute_alpha_t(path.expand_t_like_x(t, xt))
+            sigma_t, d_sigma_t = self.path_sampler.compute_sigma_t(path.expand_t_like_x(t, xt))
+            denom = d_alpha_t * sigma_t - d_sigma_t * alpha_t
+            x1_hat = (sigma_t * model_output - d_sigma_t * xt) / (denom + 1e-8)
+            t_ = path.expand_t_like_x(t, xt)
+            weight = (1 - t_) + t_ * (t_ / (1 - t_ + 1e-8)) ** 2
+            terms['loss'] = mean_flat(weight * ((x1_hat - x1) ** 2))
+        elif self.model_type == ModelType.VELOCITY and self.loss_space == LossSpace.CONSTANT_BLEND_VN:
+            # weight = (1/(1-t))^2 + (t/(1-t))^2
+            alpha_t, d_alpha_t = self.path_sampler.compute_alpha_t(path.expand_t_like_x(t, xt))
+            sigma_t, d_sigma_t = self.path_sampler.compute_sigma_t(path.expand_t_like_x(t, xt))
+            denom = d_alpha_t * sigma_t - d_sigma_t * alpha_t
+            x1_hat = (sigma_t * model_output - d_sigma_t * xt) / (denom + 1e-8)
+            t_ = path.expand_t_like_x(t, xt)
+            weight = (1 / (1 - t_ + 1e-8)) ** 2 + (t_ / (1 - t_ + 1e-8)) ** 2
+            terms['loss'] = mean_flat(weight * ((x1_hat - x1) ** 2))
+        elif self.model_type == ModelType.VELOCITY and self.loss_space == LossSpace.LINEAR_BLEND_VN:
+            # weight = (1-t)*(1/(1-t))^2 + t*(t/(1-t))^2
+            alpha_t, d_alpha_t = self.path_sampler.compute_alpha_t(path.expand_t_like_x(t, xt))
+            sigma_t, d_sigma_t = self.path_sampler.compute_sigma_t(path.expand_t_like_x(t, xt))
+            denom = d_alpha_t * sigma_t - d_sigma_t * alpha_t
+            x1_hat = (sigma_t * model_output - d_sigma_t * xt) / (denom + 1e-8)
+            t_ = path.expand_t_like_x(t, xt)
+            weight = (1 - t_) * (1 / (1 - t_ + 1e-8)) ** 2 + t_ * (t_ / (1 - t_ + 1e-8)) ** 2
+            terms['loss'] = mean_flat(weight * ((x1_hat - x1) ** 2))
+        elif self.model_type == ModelType.VELOCITY and self.loss_space == LossSpace.CONSTANT_BLEND_XV_ENTIRE:
+            # weight = (1 + 1/(1-t))^2
+            alpha_t, d_alpha_t = self.path_sampler.compute_alpha_t(path.expand_t_like_x(t, xt))
+            sigma_t, d_sigma_t = self.path_sampler.compute_sigma_t(path.expand_t_like_x(t, xt))
+            denom = d_alpha_t * sigma_t - d_sigma_t * alpha_t
+            x1_hat = (sigma_t * model_output - d_sigma_t * xt) / (denom + 1e-8)
+            t_ = path.expand_t_like_x(t, xt)
+            weight = (1 + 1 / (1 - t_ + 1e-8)) ** 2
+            terms['loss'] = mean_flat(weight * ((x1_hat - x1) ** 2))
+        elif self.model_type == ModelType.VELOCITY and self.loss_space == LossSpace.LINEAR_BLEND_XV_ENTIRE:
+            # weight = ((1-t) + t/(1-t))^2
+            alpha_t, d_alpha_t = self.path_sampler.compute_alpha_t(path.expand_t_like_x(t, xt))
+            sigma_t, d_sigma_t = self.path_sampler.compute_sigma_t(path.expand_t_like_x(t, xt))
+            denom = d_alpha_t * sigma_t - d_sigma_t * alpha_t
+            x1_hat = (sigma_t * model_output - d_sigma_t * xt) / (denom + 1e-8)
+            t_ = path.expand_t_like_x(t, xt)
+            weight = ((1 - t_) + t_ / (1 - t_ + 1e-8)) ** 2
+            terms['loss'] = mean_flat(weight * ((x1_hat - x1) ** 2))
+        elif self.model_type == ModelType.VELOCITY and self.loss_space == LossSpace.CONSTANT_BLEND_XN_ENTIRE:
+            # weight = (1 + t/(1-t))^2
+            alpha_t, d_alpha_t = self.path_sampler.compute_alpha_t(path.expand_t_like_x(t, xt))
+            sigma_t, d_sigma_t = self.path_sampler.compute_sigma_t(path.expand_t_like_x(t, xt))
+            denom = d_alpha_t * sigma_t - d_sigma_t * alpha_t
+            x1_hat = (sigma_t * model_output - d_sigma_t * xt) / (denom + 1e-8)
+            t_ = path.expand_t_like_x(t, xt)
+            weight = (1 - t_ / (1 - t_ + 1e-8)) ** 2
+            terms['loss'] = mean_flat(weight * ((x1_hat - x1) ** 2))
+        elif self.model_type == ModelType.VELOCITY and self.loss_space == LossSpace.LINEAR_BLEND_XN_ENTIRE:
+            # weight = (1-t + t*(t/(1-t)))^2
+            alpha_t, d_alpha_t = self.path_sampler.compute_alpha_t(path.expand_t_like_x(t, xt))
+            sigma_t, d_sigma_t = self.path_sampler.compute_sigma_t(path.expand_t_like_x(t, xt))
+            denom = d_alpha_t * sigma_t - d_sigma_t * alpha_t
+            x1_hat = (sigma_t * model_output - d_sigma_t * xt) / (denom + 1e-8)
+            t_ = path.expand_t_like_x(t, xt)
+            weight = (1 - t_ - t_ * (t_ / (1 - t_ + 1e-8))) ** 2
+            terms['loss'] = mean_flat(weight * ((x1_hat - x1) ** 2))
+        elif self.model_type == ModelType.VELOCITY and self.loss_space == LossSpace.CONSTANT_BLEND_VN_ENTIRE:
+            # weight = (1/(1-t) + t/(1-t))^2
+            alpha_t, d_alpha_t = self.path_sampler.compute_alpha_t(path.expand_t_like_x(t, xt))
+            sigma_t, d_sigma_t = self.path_sampler.compute_sigma_t(path.expand_t_like_x(t, xt))
+            denom = d_alpha_t * sigma_t - d_sigma_t * alpha_t
+            x1_hat = (sigma_t * model_output - d_sigma_t * xt) / (denom + 1e-8)
+            t_ = path.expand_t_like_x(t, xt)
+            weight = (1 / (1 - t_ + 1e-8) + t_ / (1 - t_ + 1e-8)) ** 2
+            terms['loss'] = mean_flat(weight * ((x1_hat - x1) ** 2))
+        elif self.model_type == ModelType.VELOCITY and self.loss_space == LossSpace.LINEAR_BLEND_VN_ENTIRE:
+            # weight = (1 + t*(t/(1-t)))^2
+            alpha_t, d_alpha_t = self.path_sampler.compute_alpha_t(path.expand_t_like_x(t, xt))
+            sigma_t, d_sigma_t = self.path_sampler.compute_sigma_t(path.expand_t_like_x(t, xt))
+            denom = d_alpha_t * sigma_t - d_sigma_t * alpha_t
+            x1_hat = (sigma_t * model_output - d_sigma_t * xt) / (denom + 1e-8)
+            t_ = path.expand_t_like_x(t, xt)
+            weight = (1 + t_ * (t_ / (1 - t_ + 1e-8))) ** 2
+            terms['loss'] = mean_flat(weight * ((x1_hat - x1) ** 2))
         else:
             _, drift_var = self.path_sampler.compute_drift(xt, t)
             sigma_t, _ = self.path_sampler.compute_sigma_t(path.expand_t_like_x(t, xt))
@@ -194,7 +367,11 @@ class Transport:
                 terms['loss'] = mean_flat(weight * ((model_output - x0) ** 2))
             else:
                 terms['loss'] = mean_flat(weight * ((model_output * sigma_t + x0) ** 2))
-                
+
+        if self.scale_loss and self.model_type == ModelType.VELOCITY:
+            scale = VELOCITY_LOSS_SCALES.get(self.loss_space, 1.0)
+            terms['loss'] = terms['loss'] * scale
+
         return terms
     
 
