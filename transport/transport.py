@@ -73,6 +73,8 @@ class LossSpace(enum.Enum):
     LINEAR_BLEND_XN_ENTIRE = enum.auto()
     CONSTANT_BLEND_VN_ENTIRE = enum.auto()
     LINEAR_BLEND_VN_ENTIRE = enum.auto()
+    VANILLA_WEIGHTING_V = enum.auto()
+    STRAIGHT_WEIGHTING_V = enum.auto()
 
 
 VELOCITY_LOSS_SCALES = {
@@ -104,6 +106,7 @@ class Transport:
         sample_eps,
         t_min=0.0,
         scale_loss=False,
+        loss_lambda=1.0,
     ):
         path_options = {
             PathType.LINEAR: path.ICPlan,
@@ -120,6 +123,7 @@ class Transport:
         # t_min: restrict training/sampling to [t_min, 1]; used by TM2T where t_min = m
         self.t_min = t_min
         self.scale_loss = scale_loss
+        self.loss_lambda = loss_lambda
 
     def prior_logp(self, z):
         '''
@@ -351,6 +355,16 @@ class Transport:
             t_ = path.expand_t_like_x(t, xt)
             weight = (1 + t_ * (t_ / (1 - t_ + 1e-8))) ** 2
             terms['loss'] = mean_flat(weight * ((x1_hat - x1) ** 2))
+        elif self.model_type == ModelType.VELOCITY and self.loss_space == LossSpace.VANILLA_WEIGHTING_V:
+            # weight = 1 / ((1-t)^2 + lambda^2 * t^2)
+            t_ = path.expand_t_like_x(t, xt)
+            weight = 1.0 / ((1 - t_) ** 2 + self.loss_lambda ** 2 * t_ ** 2 + 1e-8)
+            terms['loss'] = mean_flat(weight * ((model_output - ut) ** 2))
+        elif self.model_type == ModelType.VELOCITY and self.loss_space == LossSpace.STRAIGHT_WEIGHTING_V:
+            # weight = lambda^2 / (1 + (lambda-1)*t)^2
+            t_ = path.expand_t_like_x(t, xt)
+            weight = self.loss_lambda ** 2 / ((1 + (self.loss_lambda - 1) * t_) ** 2 + 1e-8)
+            terms['loss'] = mean_flat(weight * ((model_output - ut) ** 2))
         else:
             _, drift_var = self.path_sampler.compute_drift(xt, t)
             sigma_t, _ = self.path_sampler.compute_sigma_t(path.expand_t_like_x(t, xt))

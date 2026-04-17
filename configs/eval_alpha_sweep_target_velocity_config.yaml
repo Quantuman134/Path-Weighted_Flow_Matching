@@ -6,13 +6,18 @@
 # alpha=0 → pure velocity model, alpha=1 → pure target model.
 
 experiment:
-  name: "alpha_reverse_linear_target_velocity_1"
+  name: "alpha_sweep_target_velocity_TT_TV_same_epoch"
   results_base_dir: "./experiment"
 
 vae: 'ema'  # 'ema' or 'mse'
 
 model1:                               # target predictor
-  ckpt: './results/016-SiT-S-2-Linear-target-None/checkpoints/0140000.pt'          # REQUIRED
+# SiT-S-2_64_target_pretrained
+# SiT-S-2_64_velocity_pretrained
+# SiT-S-2-Linear-target-None-velocity-pretrained
+# SiT-S-2-Linear-velocity-None-target-pretrained
+
+  ckpt: './results/SiT-S-2_64_target_pretrained/checkpoints/0430000.pt'          # REQUIRED
   use_ema: true                        # true → load state["ema"], false → state["model"]
   model: 'SiT-S/2'                   # architecture: SiT-XL/2, SiT-L/2, SiT-B/2, SiT-S/2
   image_size: 64                      # 256 or 512
@@ -24,19 +29,19 @@ model1:                               # target predictor
   train_eps: null
 
 model2:                               # velocity predictor
-  ckpt: './results/SiT-S-2_64_velocity_pretrained/checkpoints/0430000.pt'          # REQUIRED
+  ckpt: './results/SiT-S-2-Linear-target-None-velocity-pretrained/checkpoints/0430000.pt'           # REQUIRED
   use_ema: true
   model: 'SiT-S/2'
   image_size: 64
   num_classes: 1000
-  prediction: 'velocity'               # can differ from model1
+  prediction: 'target'               # can differ from model1
   path_type: 'Linear'
   loss_weight: null
   sample_eps: null
   train_eps: null
 
 eval:
-  alpha_scheduler: linear  # null → use alpha_list sweep; 'linear' → alpha(t) = t
+  alpha_scheduler: null  # null → use alpha_list sweep; 'linear' → alpha(t) = t
   alpha_list: [0.0, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 1.0]
   num_images: 50000
   grid_samples: 256
@@ -54,4 +59,4 @@ sampling:
   atol: 1.0e-6
   rtol: 1.0e-3
 
-device: 'cuda:3'
+device: 'cuda:2'

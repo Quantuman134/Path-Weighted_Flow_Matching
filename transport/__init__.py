@@ -9,6 +9,7 @@ def create_transport(
     sample_eps=None,
     t_min=0.0,
     scale_loss=False,
+    loss_lambda=1.0,
 ):
     """function for creating Transport object
     **Note**: model prediction defaults to velocity
@@ -70,6 +71,10 @@ def create_transport(
         loss_space_type = LossSpace.CONSTANT_BLEND_VN_ENTIRE
     elif loss_space == "linear_blend_vn_entire":
         loss_space_type = LossSpace.LINEAR_BLEND_VN_ENTIRE
+    elif loss_space == "vanilla_weighting_v":
+        loss_space_type = LossSpace.VANILLA_WEIGHTING_V
+    elif loss_space == "straight_weighting_v":
+        loss_space_type = LossSpace.STRAIGHT_WEIGHTING_V
     else:
         # default: match model type
         loss_space_type = LossSpace.TARGET if model_type == ModelType.TARGET else LossSpace.VELOCITY
@@ -104,6 +109,7 @@ def create_transport(
         sample_eps=sample_eps,
         t_min=t_min,
         scale_loss=scale_loss,
+        loss_lambda=loss_lambda,
     )
     
     return state
