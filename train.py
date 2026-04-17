@@ -75,6 +75,7 @@ def config_to_args(config):
     if args.data_path is None:
         raise ValueError("data_path is required in config file")
     args.val_data_path = config['data'].get('val_data_path', None)
+    args.dataset_name = config['data'].get('dataset_name', None)
     
     # Model settings
     args.model = config['model']['model']
@@ -89,6 +90,7 @@ def config_to_args(config):
     args.loss_space = config['transport'].get('loss_space', None)
     args.sample_eps = config['transport'].get('sample_eps', None)
     args.train_eps = config['transport'].get('train_eps', None)
+    args.loss_lambda = float(config['transport'].get('loss_lambda', 1.0))
 
     # Training settings
     args.scale_enable = bool(config['training'].get('scale_enable', False))
@@ -245,7 +247,7 @@ def validate_metrics(ema_model, vae, val_loader, transport_sampler, args, device
         # Setup for CFG if needed
         if use_cfg:
             zs = torch.cat([zs, zs], 0)
-            y_null = torch.tensor([1000] * curr_batch_size, device=device)
+            y_null = torch.tensor([args.num_classes] * curr_batch_size, device=device)
             ys = torch.cat([ys, y_null], 0)
             sample_model_kwargs = dict(y=ys, cfg_scale=args.cfg_scale)
             model_fn = ema_model.forward_with_cfg
@@ -373,9 +375,16 @@ def main(args):
         model_string_name = args.model.replace("/", "-")  # e.g., SiT-XL/2 --> SiT-XL-2 (for naming folders)
         if args.scale_enable:
             model_string_name = model_string_name + "-scaled"
+        dataset_suffix = f"-{args.dataset_name}" if args.dataset_name else ""
+        _LAMBDA_LOSS_SPACES = {"vanilla_weighting_v", "straight_weighting_v"}
+        loss_space_suffix = (
+            f"{args.loss_space}-lam{args.loss_lambda}"
+            if args.loss_space in _LAMBDA_LOSS_SPACES
+            else str(args.loss_space)
+        )
         experiment_name = f"{experiment_index:03d}-{model_string_name}-" \
-                        f"{args.path_type}-{args.prediction}-{args.loss_weight}-{args.loss_space}" \
-                        f"-IS{args.image_size}-BS{args.global_batch_size}"
+                        f"{args.path_type}-{args.prediction}-{args.loss_weight}-{loss_space_suffix}" \
+                        f"-IS{args.image_size}-BS{args.global_batch_size}{dataset_suffix}"
         experiment_dir = f"{args.results_dir}/{experiment_name}"  # Create an experiment folder
         checkpoint_dir = f"{experiment_dir}/checkpoints"  # Stores saved model checkpoints
         os.makedirs(checkpoint_dir, exist_ok=True)
@@ -420,6 +429,7 @@ def main(args):
         args.train_eps,
         args.sample_eps,
         scale_loss=args.scale_enable,
+        loss_lambda=args.loss_lambda,
     )  # default: velocity;
     transport_sampler = Sampler(transport)
     vae = AutoencoderKL.from_pretrained(f"stabilityai/sd-vae-ft-{args.vae}").to(device)
@@ -517,7 +527,7 @@ def main(args):
     start_time = time()
 
     # Labels to condition the model with (feel free to change):
-    ys = torch.randint(1000, size=(local_batch_size,), device=device)
+    ys = torch.randint(args.num_classes, size=(local_batch_size,), device=device)
     use_cfg = args.cfg_scale > 1.0
     # Create sampling noise:
     n = ys.size(0)
@@ -526,7 +536,7 @@ def main(args):
     # Setup classifier-free guidance:
     if use_cfg:
         zs = torch.cat([zs, zs], 0)
-        y_null = torch.tensor([1000] * n, device=device)
+        y_null = torch.tensor([args.num_classes] * n, device=device)
         ys = torch.cat([ys, y_null], 0)
         sample_model_kwargs = dict(y=ys, cfg_scale=args.cfg_scale)
         model_fn = ema.forward_with_cfg

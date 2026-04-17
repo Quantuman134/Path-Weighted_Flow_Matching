@@ -1,0 +1,44 @@
+# Configuration for SiT Training on CIFAR-10
+
+data:
+  data_path: /home/hkzhang/Generative_Rendering/DiT/T2I_lab/results/cifar10/train
+  val_data_path: /home/hkzhang/Generative_Rendering/DiT/T2I_lab/results/cifar10/test
+  dataset_name: cifar10
+
+model:
+  model: 'SiT-S/2'     # smallest variant — appropriate for CIFAR-10 scale
+  image_size: 256       # center_crop_arr upscales 32×32 → 256×256; SD VAE requires ≥64×64
+  num_classes: 10
+  vae: 'mse'
+
+transport:
+  path_type: 'Linear'
+  prediction: 'velocity'
+  loss_weight: null
+  loss_space: null
+  sample_eps: null
+  train_eps: null
+
+training:
+  epochs: 1400
+  global_batch_size: 256
+  global_seed: 0
+  num_workers: 4
+  scale_enable: false
+
+logging:
+  results_dir: './results/cifar10_sit'
+  log_every: 100
+  ckpt_every: 10000
+  sample_every: 5000
+  wandb: false
+
+validation:
+  val_num_samples: 5000
+  val_log_images: 16
+
+sampling:
+  cfg_scale: 1.5
+
+checkpoint:
+  ckpt: null

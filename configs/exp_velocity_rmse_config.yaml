@@ -1,0 +1,25 @@
+# Configuration for velocity prediction RMSE evaluation across timesteps
+
+experiment:
+  name: target_rmse        # experiment folder name under output_dir
+  output_dir: ./experiment
+
+checkpoint:
+  ckpt_path: ./results/SiT-S-2_64_velocity_pretrained/checkpoints/0540000.pt                    # REQUIRED: path to .pt checkpoint file
+  use_ema: true                      # use EMA weights (recommended)
+
+# Optional: override fields from checkpoint's saved args
+model_overrides: {}
+
+data:
+  data_path: /data/hkzhang/imagenet_raw/train  # REQUIRED: Path to validation data (ImageFolder format)
+  dataset_name: imagenet
+  num_workers: 4
+
+eval:
+  num_images_per_step: 10000          # number of images evaluated at each timestep
+  batch_size: 64
+  seed: 0
+  time_steps: [0.0, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9]
+
+device: cuda:3
