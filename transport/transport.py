@@ -1,3 +1,4 @@
+import math
 import torch as th
 import numpy as np
 import logging
@@ -93,6 +94,17 @@ VELOCITY_LOSS_SCALES = {
 }
 
 
+def straight_weighting_scale(lam: float) -> float:
+    if abs(lam - 1) < 1e-8:
+        return 1.0
+    return (lam - 1) / (lam * math.log(lam))
+
+
+def vanilla_weighting_scale(lam: float) -> float:
+    sq = math.sqrt(lam ** 2 + 1)
+    return (sq / lam) / math.log((lam ** 2 + lam * sq) / (sq - 1))
+
+
 class Transport:
 
     def __init__(
@@ -107,6 +119,7 @@ class Transport:
         t_min=0.0,
         scale_loss=False,
         loss_lambda=1.0,
+        extra_scale=None,
     ):
         path_options = {
             PathType.LINEAR: path.ICPlan,
@@ -124,6 +137,7 @@ class Transport:
         self.t_min = t_min
         self.scale_loss = scale_loss
         self.loss_lambda = loss_lambda
+        self.extra_scale = extra_scale
 
     def prior_logp(self, z):
         '''
@@ -358,7 +372,7 @@ class Transport:
         elif self.model_type == ModelType.VELOCITY and self.loss_space == LossSpace.VANILLA_WEIGHTING_V:
             # weight = 1 / ((1-t)^2 + lambda^2 * t^2)
             t_ = path.expand_t_like_x(t, xt)
-            weight = 1.0 / ((1 - t_) ** 2 + self.loss_lambda ** 2 * t_ ** 2 + 1e-8)
+            weight = self.loss_lambda**2 / ((1 - t_) ** 2 + self.loss_lambda ** 2 * t_ ** 2 + 1e-8)
             terms['loss'] = mean_flat(weight * ((model_output - ut) ** 2))
         elif self.model_type == ModelType.VELOCITY and self.loss_space == LossSpace.STRAIGHT_WEIGHTING_V:
             # weight = lambda^2 / (1 + (lambda-1)*t)^2
@@ -383,7 +397,14 @@ class Transport:
                 terms['loss'] = mean_flat(weight * ((model_output * sigma_t + x0) ** 2))
 
         if self.scale_loss and self.model_type == ModelType.VELOCITY:
-            scale = VELOCITY_LOSS_SCALES.get(self.loss_space, 1.0)
+            if self.loss_space == LossSpace.STRAIGHT_WEIGHTING_V:
+                scale = straight_weighting_scale(self.loss_lambda)
+            elif self.loss_space == LossSpace.VANILLA_WEIGHTING_V:
+                scale = vanilla_weighting_scale(self.loss_lambda)
+            else:
+                scale = VELOCITY_LOSS_SCALES.get(self.loss_space, 1.0)
+            if self.extra_scale is not None:
+                scale = scale * self.extra_scale
             terms['loss'] = terms['loss'] * scale
 
         return terms

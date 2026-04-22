@@ -37,6 +37,7 @@ def initialize(args, entity, exp_name, project_name, wandb_key=None):
         config=config_dict,
         # id=generate_run_id(exp_name),
         # resume="allow",
+        settings=wandb.Settings(init_timeout=300),
     )
 
 

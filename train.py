@@ -94,6 +94,8 @@ def config_to_args(config):
 
     # Training settings
     args.scale_enable = bool(config['training'].get('scale_enable', False))
+    _extra_scale = config['training'].get('extra_scale', None)
+    args.extra_scale = float(_extra_scale) if _extra_scale is not None else None
     args.epochs = int(config['training']['epochs'])
     args.global_batch_size = int(config['training']['global_batch_size'])
     args.global_seed = int(config['training']['global_seed'])
@@ -187,6 +189,18 @@ def center_crop_arr(pil_image, image_size):
     crop_y = (arr.shape[0] - image_size) // 2
     crop_x = (arr.shape[1] - image_size) // 2
     return Image.fromarray(arr[crop_y: crop_y + image_size, crop_x: crop_x + image_size])
+
+
+class CenterCropTransform:
+    """
+    Pickleable wrapper for center crop transformation.
+    Used to avoid pickle errors with lambda functions in DataLoader multiprocessing.
+    """
+    def __init__(self, image_size):
+        self.image_size = image_size
+    
+    def __call__(self, pil_image):
+        return center_crop_arr(pil_image, self.image_size)
 
 
 @torch.no_grad()
@@ -430,6 +444,7 @@ def main(args):
         args.sample_eps,
         scale_loss=args.scale_enable,
         loss_lambda=args.loss_lambda,
+        extra_scale=args.extra_scale,
     )  # default: velocity;
     transport_sampler = Sampler(transport)
     vae = AutoencoderKL.from_pretrained(f"stabilityai/sd-vae-ft-{args.vae}").to(device)
@@ -444,7 +459,7 @@ def main(args):
 
     # Setup data:
     transform = transforms.Compose([
-        transforms.Lambda(lambda pil_image: center_crop_arr(pil_image, args.image_size)),
+        CenterCropTransform(args.image_size),
         transforms.RandomHorizontalFlip(),
         transforms.ToTensor(),
         transforms.Normalize(mean=[0.5, 0.5, 0.5], std=[0.5, 0.5, 0.5], inplace=True)
@@ -474,7 +489,7 @@ def main(args):
     val_loader = None
     if args.val_data_path is not None:
         val_transform = transforms.Compose([
-            transforms.Lambda(lambda pil_image: center_crop_arr(pil_image, args.image_size)),
+            CenterCropTransform(args.image_size),
             transforms.ToTensor(),
             transforms.Normalize(mean=[0.5, 0.5, 0.5], std=[0.5, 0.5, 0.5], inplace=True)
         ])
