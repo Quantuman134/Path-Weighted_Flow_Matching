@@ -21,8 +21,11 @@ from copy import deepcopy
 from glob import glob
 from time import time
 import argparse
+import bisect
 import logging
 import os
+import pickle
+import random
 import yaml
 
 from models import SiT_models
@@ -75,6 +78,8 @@ def config_to_args(config):
     if args.data_path is None:
         raise ValueError("data_path is required in config file")
     args.val_data_path = config['data'].get('val_data_path', None)
+    args.latent_data_path = config['data'].get('latent_data_path', None)
+    args.packed_latent_data_path = config['data'].get('packed_latent_data_path', None)
     args.dataset_name = config['data'].get('dataset_name', None)
     
     # Model settings
@@ -91,6 +96,7 @@ def config_to_args(config):
     args.sample_eps = config['transport'].get('sample_eps', None)
     args.train_eps = config['transport'].get('train_eps', None)
     args.loss_lambda = float(config['transport'].get('loss_lambda', 1.0))
+    args.min_snr = bool(config['transport'].get('min_snr', False))
 
     # Training settings
     args.scale_enable = bool(config['training'].get('scale_enable', False))
@@ -361,6 +367,131 @@ def validate_metrics(ema_model, vae, val_loader, transport_sampler, args, device
     return fid_score, is_mean, is_std, sample_images
 
 
+_MMAP_CACHE: dict = {}  # per-worker memory-map cache: path → np.ndarray (mmap_mode='r')
+
+
+class LatentImageFolder(torch.utils.data.Dataset):
+    """Loads pre-encoded VAE latents that mirror an ImageFolder directory structure.
+
+    Each .pt file contains {'mean': fp16(4,H,W), 'std': fp16(4,H,W)}.
+    A random horizontal flip is applied to (mean, std) before sampling, which is
+    equivalent to encoding a flipped image because the VAE uses only convolutions.
+    The latent is returned already scaled by 0.18215, matching the raw-image pipeline.
+
+    A manifest.pkl is written on first use to avoid rescanning the directory tree.
+    """
+    _MANIFEST = "manifest.pkl"
+
+    def __init__(self, root, flip_prob=0.5):
+        self.root      = root
+        self.flip_prob = flip_prob
+        manifest_path  = os.path.join(root, self._MANIFEST)
+
+        if os.path.exists(manifest_path):
+            with open(manifest_path, "rb") as f:
+                self.samples, self.classes, self.class_to_idx = pickle.load(f)
+        else:
+            self._build_and_cache(manifest_path)
+
+    def _build_and_cache(self, manifest_path):
+        classes = sorted(
+            d for d in os.listdir(self.root)
+            if os.path.isdir(os.path.join(self.root, d))
+        )
+        self.class_to_idx = {c: i for i, c in enumerate(classes)}
+        self.classes       = classes
+        self.samples       = []
+        for cls_name in classes:
+            cls_dir = os.path.join(self.root, cls_name)
+            cls_idx = self.class_to_idx[cls_name]
+            for fname in sorted(os.listdir(cls_dir)):
+                if fname.endswith(".pt"):
+                    self.samples.append((os.path.join(cls_dir, fname), cls_idx))
+        tmp = f"{manifest_path}.tmp.{os.getpid()}"  # unique per rank to avoid collision
+        with open(tmp, "wb") as f:
+            pickle.dump((self.samples, self.classes, self.class_to_idx), f)
+        os.replace(tmp, manifest_path)  # atomic on POSIX — last writer wins (all identical)
+
+    def __len__(self):
+        return len(self.samples)
+
+    def __getitem__(self, index):
+        path, cls_idx = self.samples[index]
+        data = torch.load(path, weights_only=True)
+        # Both orientations are pre-encoded; pick one to avoid attention non-commutativity.
+        if random.random() < self.flip_prob:
+            mean = data["mean_flip"]   # fp32 (4, H, W)
+            std  = data["std_flip"]
+        else:
+            mean = data["mean"]
+            std  = data["std"]
+        latent = (mean + std * torch.randn_like(std)) * 0.18215
+        return latent, cls_idx
+
+
+class PackedLatentImageFolder(torch.utils.data.Dataset):
+    """Loads pre-encoded VAE latents from per-class .npy files (packed format).
+
+    Each .npy file is named <class_name>.npy and has shape (N, 2, 2, 4, H, W) float32:
+      axis 1: orientation — 0 = original, 1 = horizontally flipped
+      axis 2: parameter  — 0 = mean,      1 = std
+
+    Both orientations are pre-encoded by the VAE (not post-hoc flipped), so the
+    flip augmentation is exact. This reduces 1.28M per-file open calls to 1000,
+    eliminating the NFS metadata bottleneck.
+
+    Memory maps are opened lazily per worker process and cached in _MMAP_CACHE so
+    each worker only opens every file once regardless of how many samples it reads.
+    """
+
+    def __init__(self, root, flip_prob=0.5):
+        self.root = root
+        self.flip_prob = flip_prob
+
+        npy_files = sorted(f for f in os.listdir(root) if f.endswith(".npy"))
+        classes = [os.path.splitext(f)[0] for f in npy_files]
+        self.class_to_idx = {c: i for i, c in enumerate(classes)}
+        self.classes = classes
+
+        # Build per-class metadata; open mmap only to read shape, then release.
+        self._class_info = []   # list of (abs_path, class_idx, n_samples)
+        self._cum_sizes  = []   # cumulative sample counts for O(log C) indexing
+        cumsum = 0
+        for fname, cls_name in zip(npy_files, classes):
+            path = os.path.join(root, fname)
+            arr  = np.load(path, mmap_mode='r')
+            n    = arr.shape[0]
+            del arr  # release mmap; reopen lazily in __getitem__
+            cls_idx = self.class_to_idx[cls_name]
+            self._class_info.append((path, cls_idx, n))
+            cumsum += n
+            self._cum_sizes.append(cumsum)
+        self._total = cumsum
+
+    def __len__(self):
+        return self._total
+
+    def __getitem__(self, index):
+        # Locate which class file this flat index falls in.
+        cls_pos   = bisect.bisect_right(self._cum_sizes, index)
+        path, cls_idx, _ = self._class_info[cls_pos]
+        local_idx = index - (self._cum_sizes[cls_pos - 1] if cls_pos > 0 else 0)
+
+        # Lazy per-worker mmap: open once and keep for the lifetime of the worker.
+        if path not in _MMAP_CACHE:
+            _MMAP_CACHE[path] = np.load(path, mmap_mode='r')
+        arr = _MMAP_CACHE[path]
+
+        # arr[local_idx] shape: (2, 2, 4, H, W) float32
+        # Pick orientation; .copy() gives the tensor its own memory (not a mmap view).
+        ori  = 1 if random.random() < self.flip_prob else 0
+        mean = torch.from_numpy(arr[local_idx, ori, 0].copy())  # (4, H, W) fp32
+        std  = torch.from_numpy(arr[local_idx, ori, 1].copy())
+
+        latent = (mean + std * torch.randn_like(std)) * 0.18215
+        return latent, cls_idx
+
+
 #################################################################################
 #                                  Training Loop                                #
 #################################################################################
@@ -396,6 +527,8 @@ def main(args):
             if args.loss_space in _LAMBDA_LOSS_SPACES
             else str(args.loss_space)
         )
+        if args.min_snr and args.loss_space == "vanilla_weighting_v":
+            loss_space_suffix += "-minsnr"
         experiment_name = f"{experiment_index:03d}-{model_string_name}-" \
                         f"{args.path_type}-{args.prediction}-{args.loss_weight}-{loss_space_suffix}" \
                         f"-IS{args.image_size}-BS{args.global_batch_size}{dataset_suffix}"
@@ -445,6 +578,7 @@ def main(args):
         scale_loss=args.scale_enable,
         loss_lambda=args.loss_lambda,
         extra_scale=args.extra_scale,
+        min_snr=args.min_snr,
     )  # default: velocity;
     transport_sampler = Sampler(transport)
     vae = AutoencoderKL.from_pretrained(f"stabilityai/sd-vae-ft-{args.vae}").to(device)
@@ -457,14 +591,44 @@ def main(args):
     if checkpoint_state is not None:
         opt.load_state_dict(checkpoint_state["opt"])
 
-    # Setup data:
-    transform = transforms.Compose([
-        CenterCropTransform(args.image_size),
-        transforms.RandomHorizontalFlip(),
-        transforms.ToTensor(),
-        transforms.Normalize(mean=[0.5, 0.5, 0.5], std=[0.5, 0.5, 0.5], inplace=True)
-    ])
-    dataset = ImageFolder(args.data_path, transform=transform)
+    # Setup data (priority: packed latents → per-file latents → raw images):
+    use_packed = (
+        args.packed_latent_data_path is not None
+        and os.path.isdir(args.packed_latent_data_path)
+    )
+    use_latents = use_packed or (
+        args.latent_data_path is not None
+        and os.path.isdir(args.latent_data_path)
+    )
+
+    if use_packed:
+        dataset     = PackedLatentImageFolder(args.packed_latent_data_path)
+        data_source = args.packed_latent_data_path
+        logger.info(f"Using packed latents from {args.packed_latent_data_path}")
+    elif use_latents:
+        dataset     = LatentImageFolder(args.latent_data_path)
+        data_source = args.latent_data_path
+        logger.info(f"Using per-file latents from {args.latent_data_path}")
+    else:
+        if args.latent_data_path is not None:
+            logger.warning(
+                f"latent_data_path '{args.latent_data_path}' not found; "
+                "falling back to raw images + VAE encoding."
+            )
+        if args.packed_latent_data_path is not None:
+            logger.warning(
+                f"packed_latent_data_path '{args.packed_latent_data_path}' not found; "
+                "falling back to raw images + VAE encoding."
+            )
+        transform = transforms.Compose([
+            CenterCropTransform(args.image_size),
+            transforms.RandomHorizontalFlip(),
+            transforms.ToTensor(),
+            transforms.Normalize(mean=[0.5, 0.5, 0.5], std=[0.5, 0.5, 0.5], inplace=True)
+        ])
+        dataset     = ImageFolder(args.data_path, transform=transform)
+        data_source = args.data_path
+
     sampler = DistributedSampler(
         dataset,
         num_replicas=dist.get_world_size(),
@@ -480,10 +644,10 @@ def main(args):
         num_workers=args.num_workers,
         pin_memory=True,
         drop_last=True,
-        persistent_workers=True,  # Keep workers alive between epochs
-        prefetch_factor=12  # Prefetch more batches per worker
+        persistent_workers=True,
+        prefetch_factor=12
     )
-    logger.info(f"Dataset contains {len(dataset):,} images ({args.data_path})")
+    logger.info(f"Dataset contains {len(dataset):,} images ({data_source})")
 
     # Setup validation data if provided:
     val_loader = None
@@ -566,9 +730,9 @@ def main(args):
         for x, y in loader:
             x = x.to(device)
             y = y.to(device)
-            with torch.no_grad():
-                # Map input images to latent space + normalize latents:
-                x = vae.encode(x).latent_dist.sample().mul_(0.18215)
+            if not use_latents:
+                with torch.no_grad():
+                    x = vae.encode(x).latent_dist.sample().mul_(0.18215)
             model_kwargs = dict(y=y)
             loss_dict = transport.training_losses(model, x, model_kwargs)
             loss = loss_dict["loss"].mean()

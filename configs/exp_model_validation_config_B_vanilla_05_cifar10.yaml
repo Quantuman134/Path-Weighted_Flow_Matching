@@ -1,0 +1,45 @@
+# ============================================================
+# Configuration for exp_model_validation.py
+# Model: SiT-B/2  |  vanilla_weighting_v lam=0.5  |  CIFAR-10 256
+# ============================================================
+
+experiment:
+  name: "performance_SiT_B_vanilla_05_cifar10"
+  experiments_base_dir: "./experiment"
+
+checkpoint:
+  checkpoint_dir: "./results/SiT-B-2-scaled-Linear-velocity-None-vanilla_weighting_v-lam0.5-IS256-BS1024-cifar10-pretrained/checkpoints/"
+  steps: [70000, 80000, 90000]
+  use_ema: true
+  skip_missing: true
+
+model_overrides:
+  model: null
+  image_size: null
+  num_classes: null
+  vae: null
+  path_type: null
+  prediction: null
+  loss_weight: null
+  sample_eps: null
+  train_eps: null
+
+eval:
+  num_images: 50000
+  batch_size: 256
+  fid_batch_size: 256
+  fid_chunk_size: 5000
+  seed: 42
+
+data:
+  ref_data_path: "/scratch/project/prj-02-visual-ai/hkzhang/cifar10/cifar10_imagefolder/train"
+  num_ref_images: 50000
+
+sampling:
+  cfg_scale: [1.0, 1.5]
+  num_sampling_steps: 50
+  sampling_method: "euler"
+  atol: 1.0e-6
+  rtol: 1.0e-3
+
+device: "cuda:0"

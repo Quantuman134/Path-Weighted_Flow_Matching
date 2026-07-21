@@ -1,0 +1,45 @@
+# ============================================================
+# Configuration for exp_model_validation.py
+# Model: SiT-XL/2  |  vanilla_weighting_v lam=1.0  |  ImageNet 256  |  finetuning
+# ============================================================
+
+experiment:
+  name: "performance_SiT_XL_vanilla_10_imagenet_finetuning"
+  experiments_base_dir: "./experiment"
+
+checkpoint:
+  checkpoint_dir: "./results/SiT-XL-2-scaled-Linear-velocity-None-vanilla_weighting_v-lam1.0-IS256-BS1024-imagenet-finetuning/checkpoints/"
+  steps: [10000, 20000, 30000, 40000, 50000, 60000, 70000, 80000, 90000, 100000, 110000, 120000, 130000]
+  use_ema: true
+  skip_missing: true
+
+model_overrides:
+  model: null
+  image_size: null
+  num_classes: null
+  vae: null
+  path_type: null
+  prediction: null
+  loss_weight: null
+  sample_eps: null
+  train_eps: null
+
+eval:
+  num_images: 50000
+  batch_size: 256
+  fid_batch_size: 256
+  fid_chunk_size: 5000
+  seed: 42
+
+data:
+  ref_data_path: "/scratch/project/prj-02-visual-ai/hkzhang/ILSVRC/Data/CLS-LOC/val"
+  num_ref_images: 50000
+
+sampling:
+  cfg_scale: [1.25, 1.5]
+  num_sampling_steps: 250
+  sampling_method: "dopri5"
+  atol: 1.0e-6
+  rtol: 1.0e-3
+
+device: "cuda:0"

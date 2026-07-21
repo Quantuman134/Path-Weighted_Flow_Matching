@@ -91,6 +91,7 @@ def config_to_args(config):
     args.loss_space = config['transport'].get('loss_space', None)
     args.sample_eps = config['transport'].get('sample_eps', None)
     args.train_eps = config['transport'].get('train_eps', None)
+    args.min_snr = bool(config['transport'].get('min_snr', False))
 
     # TM2T
     args.t_min = float(config['tm2t']['t_min'])

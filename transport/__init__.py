@@ -11,6 +11,7 @@ def create_transport(
     scale_loss=False,
     loss_lambda=1.0,
     extra_scale=None,
+    min_snr=False,
 ):
     """function for creating Transport object
     **Note**: model prediction defaults to velocity
@@ -112,6 +113,7 @@ def create_transport(
         scale_loss=scale_loss,
         loss_lambda=loss_lambda,
         extra_scale=extra_scale,
+        min_snr=min_snr,
     )
     
     return state

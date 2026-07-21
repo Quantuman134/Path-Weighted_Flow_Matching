@@ -120,6 +120,7 @@ class Transport:
         scale_loss=False,
         loss_lambda=1.0,
         extra_scale=None,
+        min_snr=False,
     ):
         path_options = {
             PathType.LINEAR: path.ICPlan,
@@ -138,6 +139,7 @@ class Transport:
         self.scale_loss = scale_loss
         self.loss_lambda = loss_lambda
         self.extra_scale = extra_scale
+        self.min_snr = min_snr
 
     def prior_logp(self, z):
         '''
@@ -370,9 +372,13 @@ class Transport:
             weight = (1 + t_ * (t_ / (1 - t_ + 1e-8))) ** 2
             terms['loss'] = mean_flat(weight * ((x1_hat - x1) ** 2))
         elif self.model_type == ModelType.VELOCITY and self.loss_space == LossSpace.VANILLA_WEIGHTING_V:
-            # weight = 1 / ((1-t)^2 + lambda^2 * t^2)
+            # weight = lambda^2 / ((1-t)^2 + lambda^2 * t^2)
             t_ = path.expand_t_like_x(t, xt)
             weight = self.loss_lambda**2 / ((1 - t_) ** 2 + self.loss_lambda ** 2 * t_ ** 2 + 1e-8)
+            if self.min_snr:
+                # b = min(1, 5*(1-t)^2): no-op for t < 0.553, suppresses clean regime
+                b = th.clamp(5.0 * (1 - t_) ** 2, max=1.0)
+                weight = b * weight
             terms['loss'] = mean_flat(weight * ((model_output - ut) ** 2))
         elif self.model_type == ModelType.VELOCITY and self.loss_space == LossSpace.STRAIGHT_WEIGHTING_V:
             # weight = lambda^2 / (1 + (lambda-1)*t)^2

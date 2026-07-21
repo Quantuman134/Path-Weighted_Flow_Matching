@@ -25,6 +25,7 @@ transport:
   sample_eps: null  # Optional: Sampling epsilon (float)
   train_eps: null  # Optional: Training epsilon (float)
   loss_lambda: 1.0  # Hyperparameter for vanilla_weighting_v and straight_weighting_v loss spaces
+  min_snr: false  # Apply min-SNR suppression to vanilla_weighting_v (b = min(1, 5*(1-t)^2))
 
 # Training Settings
 training:

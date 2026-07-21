@@ -155,20 +155,20 @@ def load_vae(vae_name: str, device: str):
 # ─── Reference features ──────────────────────────────────────────────────────
 
 def get_reference_features(
-    imagenet_val_path: str,
+    ref_data_path: str,
     num_ref: int,
     image_size: int,
     batch_size: int,
     device: str,
     seed: int = 0,
 ) -> np.ndarray:
-    """Load ImageNet val images and extract Inception features (rank 0 only)."""
+    """Load reference images (ImageFolder-compatible) and extract Inception features (rank 0 only)."""
     transform = transforms.Compose([
         transforms.Resize(image_size),
         transforms.CenterCrop(image_size),
         transforms.ToTensor(),
     ])
-    dataset = datasets.ImageFolder(imagenet_val_path, transform=transform)
+    dataset = datasets.ImageFolder(ref_data_path, transform=transform)
     rng = np.random.default_rng(seed)
     indices = rng.choice(len(dataset), size=min(num_ref, len(dataset)), replace=False)
     subset = torch.utils.data.Subset(dataset, indices.tolist())
@@ -414,6 +414,8 @@ def main():
     rank, world_size, device = setup_dist(default_device)
 
     torch.set_grad_enabled(False)
+    torch.backends.cuda.matmul.allow_tf32 = True
+    torch.backends.cudnn.allow_tf32 = True
 
     # ── 2. Experiment directory (rank 0 creates it) ───────────────────────────
     exp_dir = os.path.join(
@@ -437,16 +439,18 @@ def main():
         "eval.num_images must be >= 10 (IS splits=10 requires at least 10 images)"
 
     # ── 4. Extract model args from first available checkpoint ─────────────────
-    first_ckpt_path = os.path.join(ckpt_dir, f"{steps[0]:07d}.pt")
+    first_ckpt_path = next(
+        (os.path.join(ckpt_dir, f"{s:07d}.pt") for s in steps
+         if os.path.isfile(os.path.join(ckpt_dir, f"{s:07d}.pt"))),
+        None,
+    )
+    if first_ckpt_path is None:
+        raise FileNotFoundError(f"No checkpoint files found in: {ckpt_dir}")
     if rank == 0:
         print(f"\nExtracting model architecture from: {first_ckpt_path}")
     first_ckpt = torch.load(first_ckpt_path, map_location="cpu", weights_only=False)
-    if "args" not in first_ckpt:
-        raise KeyError(
-            "Checkpoint has no 'args' key. Please specify all required fields "
-            "in model_overrides (model, image_size, num_classes, vae, path_type, prediction)."
-        )
-    model_args = resolve_model_args(first_ckpt["args"], cfg.get("model_overrides") or {})
+    ckpt_args = first_ckpt.get("args", None)
+    model_args = resolve_model_args(ckpt_args, cfg.get("model_overrides") or {})
     del first_ckpt
 
     if rank == 0:
@@ -469,9 +473,10 @@ def main():
 
     # ── 6. Reference features + Inception v3 for IS (rank 0 only) ────────────
     if rank == 0:
-        print(f"\nBuilding reference features from {cfg['data']['imagenet_val_path']} ...")
+        ref_data_path = cfg["data"].get("ref_data_path") or cfg["data"]["imagenet_val_path"]
+        print(f"\nBuilding reference features from {ref_data_path} ...")
         ref_features = get_reference_features(
-            cfg["data"]["imagenet_val_path"],
+            ref_data_path,
             cfg["data"]["num_ref_images"],
             model_args.image_size,
             cfg["eval"]["fid_batch_size"],
