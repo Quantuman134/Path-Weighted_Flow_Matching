@@ -1,7 +1,7 @@
 #!/bin/bash
 source /scratch/project/prj-02-visual-ai/hkzhang/miniconda3/etc/profile.d/conda.sh
 conda activate SiT
-cd /scratch/project/prj-02-visual-ai/hkzhang/SiT
+cd /scratch/project/prj-02-visual-ai/hkzhang/Path-Weighted_Flow_Matching
 NUM_GPUS=8
 SINGLE_GPU_DEVICE="cuda:0"
 CONFIG="configs/exp_model_validation_config_B_velocity_imagenet.yaml"

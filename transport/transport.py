@@ -40,10 +40,9 @@ class WeightType(enum.Enum):
 class LossSpace(enum.Enum):
     """
     Which space to compute the training loss in.
-    VELOCITY:                 loss on predicted velocity vs ground-truth velocity
+    VELOCITY:                 loss on predicted velocity vs ground-truth velocity (uniform flow matching)
     TARGET:                   loss on predicted x1 vs ground-truth x1
     NOISE:                    velocity → x1_hat, weight = (alpha_t/sigma_t)^2 = t^2/(1-t)^2 (linear path)
-    MIN_SNR:                  velocity → x1_hat, weight = min((alpha_t/sigma_t)^2, 5)
     CONSTANT_BLEND_XV:        velocity → x1_hat, weight = 1 + 1/(1-t)^2
     LINEAR_BLEND_XV:          velocity → x1_hat, weight = (1-t) + t/(1-t)^2
     CONSTANT_BLEND_XN:        velocity → x1_hat, weight = 1 + (t/(1-t))^2
@@ -56,12 +55,19 @@ class LossSpace(enum.Enum):
     LINEAR_BLEND_XN_ENTIRE:   velocity → x1_hat, weight = (1-t + t*(t/(1-t)))^2
     CONSTANT_BLEND_VN_ENTIRE: velocity → x1_hat, weight = (1/(1-t) + t/(1-t))^2
     LINEAR_BLEND_VN_ENTIRE:   velocity → x1_hat, weight = (1 + t*(t/(1-t)))^2
+    VANILLA_WEIGHTING_V:      velocity, mean-one parameterized weight = lambda^2 / ((1-t)^2 + lambda^2 t^2)
+    STRAIGHT_WEIGHTING_V:     velocity, mean-one parameterized weight = lambda^2 / (1 + (lambda-1)t)^2
+    SNR_V:                    velocity, mean-one SNR weighting w(t) = 3 t^2 (Gagneux et al.)
+    KG_V:                     velocity, mean-one Kingma-Gao sigmoid-monotonic w(t) = (1/Z) 2t(1-t)/((1-t)^2+e^{-2}t^2)
+    MIN_SNR_GAMMA_V:         velocity, mean-one Min-SNR-gamma w(t) = 3(1+sqrt(g))^2/g * min(t^2, g(1-t)^2), g=loss_lambda
+    LOGIT_NORMAL_V:           velocity, mean-one SD3 logit-normal w(t) = exp(-(logit(t)-m)^2/(2s^2)) / (s sqrt(2pi) t(1-t))
+    COSMAP_V:                 velocity, mean-one SD3 CosMap w(t) = 2 / (pi (1-2t+2t^2))
+    RFPP_V:                   velocity, mean-one RF++ U-shaped w(t) = 2 cosh(a(t-1/2))/sinh(a), a=4
     """
 
     VELOCITY = enum.auto()
     TARGET = enum.auto()
     NOISE = enum.auto()
-    MIN_SNR = enum.auto()
     CONSTANT_BLEND_XV = enum.auto()
     LINEAR_BLEND_XV = enum.auto()
     CONSTANT_BLEND_XN = enum.auto()
@@ -76,6 +82,12 @@ class LossSpace(enum.Enum):
     LINEAR_BLEND_VN_ENTIRE = enum.auto()
     VANILLA_WEIGHTING_V = enum.auto()
     STRAIGHT_WEIGHTING_V = enum.auto()
+    SNR_V = enum.auto()
+    KG_V = enum.auto()
+    MIN_SNR_GAMMA_V = enum.auto()
+    LOGIT_NORMAL_V = enum.auto()
+    COSMAP_V = enum.auto()
+    RFPP_V = enum.auto()
 
 
 VELOCITY_LOSS_SCALES = {
@@ -90,7 +102,12 @@ VELOCITY_LOSS_SCALES = {
     LossSpace.CONSTANT_BLEND_XN_ENTIRE: 3.0,
     LossSpace.LINEAR_BLEND_XN:          2.0,
     LossSpace.LINEAR_BLEND_XN_ENTIRE:   3.0,
-    LossSpace.MIN_SNR:                  3.0,
+    LossSpace.SNR_V:                    1.0,
+    LossSpace.KG_V:                     1.0,
+    LossSpace.MIN_SNR_GAMMA_V:         1.0,
+    LossSpace.LOGIT_NORMAL_V:           1.0,
+    LossSpace.COSMAP_V:                 1.0,
+    LossSpace.RFPP_V:                   1.0,
 }
 
 
@@ -120,7 +137,6 @@ class Transport:
         scale_loss=False,
         loss_lambda=1.0,
         extra_scale=None,
-        min_snr=False,
     ):
         path_options = {
             PathType.LINEAR: path.ICPlan,
@@ -134,12 +150,11 @@ class Transport:
         self.path_sampler = path_options[path_type]()
         self.train_eps = train_eps
         self.sample_eps = sample_eps
-        # t_min: restrict training/sampling to [t_min, 1]; used by TM2T where t_min = m
+        # t_min: restrict training/sampling to [t_min, 1] (default 0.0 = full [0, 1])
         self.t_min = t_min
         self.scale_loss = scale_loss
         self.loss_lambda = loss_lambda
         self.extra_scale = extra_scale
-        self.min_snr = min_snr
 
     def prior_logp(self, z):
         '''
@@ -190,7 +205,7 @@ class Transport:
 
         x0 = th.randn_like(x1)
         t0, t1 = self.check_interval(self.train_eps, self.sample_eps)
-        # Clamp lower bound by t_min so TM2T only trains on [t_min, 1]
+        # Clamp lower bound by t_min so training only samples t ∈ [t_min, 1]
         effective_t0 = max(t0, self.t_min)
         t = th.rand((x1.shape[0],)) * (t1 - effective_t0) + effective_t0
         t = t.to(x1)
@@ -253,15 +268,6 @@ class Transport:
             x1_hat = (sigma_t * model_output - d_sigma_t * xt) / (denom + 1e-8)
             weight = (alpha_t / (sigma_t + 1e-8)) ** 2
             terms['loss'] = mean_flat(weight * ((x1_hat - x1) ** 2))
-        elif self.model_type == ModelType.VELOCITY and self.loss_space == LossSpace.MIN_SNR:
-            # velocity model, Min-SNR-5 loss: same as noise loss but SNR weight clamped at gamma=5
-            # weight = min((alpha_t/sigma_t)^2, 5)
-            alpha_t, d_alpha_t = self.path_sampler.compute_alpha_t(path.expand_t_like_x(t, xt))
-            sigma_t, d_sigma_t = self.path_sampler.compute_sigma_t(path.expand_t_like_x(t, xt))
-            denom = d_alpha_t * sigma_t - d_sigma_t * alpha_t
-            x1_hat = (sigma_t * model_output - d_sigma_t * xt) / (denom + 1e-8)
-            weight = th.clamp((alpha_t / (sigma_t + 1e-8)) ** 2, max=5)
-            terms['loss'] = mean_flat(weight * ((x1_hat - x1) ** 2))
         elif self.model_type == ModelType.VELOCITY and self.loss_space == LossSpace.CONSTANT_BLEND_XV:
             # velocity model, constant_blend_xv loss: weight = 1 + 1/(1-t)^2
             alpha_t, d_alpha_t = self.path_sampler.compute_alpha_t(path.expand_t_like_x(t, xt))
@@ -278,7 +284,6 @@ class Transport:
             denom = d_alpha_t * sigma_t - d_sigma_t * alpha_t
             x1_hat = (sigma_t * model_output - d_sigma_t * xt) / (denom + 1e-8)
             t_ = path.expand_t_like_x(t, xt)
-            # weight = th.clamp((1 - t_) + t_ / ((1 - t_) ** 2 + 1e-8), max=5) # + min_snr
             weight = (1 - t_) + t_ / ((1 - t_) ** 2 + 1e-8)
             terms['loss'] = mean_flat(weight * ((x1_hat - x1) ** 2))
         elif self.model_type == ModelType.VELOCITY and self.loss_space == LossSpace.CONSTANT_BLEND_XN:
@@ -375,15 +380,49 @@ class Transport:
             # weight = lambda^2 / ((1-t)^2 + lambda^2 * t^2)
             t_ = path.expand_t_like_x(t, xt)
             weight = self.loss_lambda**2 / ((1 - t_) ** 2 + self.loss_lambda ** 2 * t_ ** 2 + 1e-8)
-            if self.min_snr:
-                # b = min(1, 5*(1-t)^2): no-op for t < 0.553, suppresses clean regime
-                b = th.clamp(5.0 * (1 - t_) ** 2, max=1.0)
-                weight = b * weight
             terms['loss'] = mean_flat(weight * ((model_output - ut) ** 2))
         elif self.model_type == ModelType.VELOCITY and self.loss_space == LossSpace.STRAIGHT_WEIGHTING_V:
             # weight = lambda^2 / (1 + (lambda-1)*t)^2
             t_ = path.expand_t_like_x(t, xt)
             weight = self.loss_lambda ** 2 / ((1 + (self.loss_lambda - 1) * t_) ** 2 + 1e-8)
+            terms['loss'] = mean_flat(weight * ((model_output - ut) ** 2))
+        elif self.model_type == ModelType.VELOCITY and self.loss_space == LossSpace.SNR_V:
+            # SNR weighting (Gagneux et al.): w(t) = 3 t^2, mean-one under U(0,1)
+            t_ = path.expand_t_like_x(t, xt)
+            weight = 3.0 * t_ ** 2
+            terms['loss'] = mean_flat(weight * ((model_output - ut) ** 2))
+        elif self.model_type == ModelType.VELOCITY and self.loss_space == LossSpace.KG_V:
+            # Kingma-Gao sigmoid-monotonic (ELBO-motivated): w(t) = (1/Z) 2t(1-t)/((1-t)^2 + e^{-2} t^2)
+            # Z = integral_0^1 2t(1-t)/((1-t)^2 + e^{-2} t^2) dt approx 1.373260287 (mean-one)
+            _Z_KG = 1.373260287
+            t_ = path.expand_t_like_x(t, xt)
+            weight = (1.0 / _Z_KG) * (2.0 * t_ * (1.0 - t_)) / ((1.0 - t_) ** 2 + math.exp(-2.0) * t_ ** 2 + 1e-8)
+            terms['loss'] = mean_flat(weight * ((model_output - ut) ** 2))
+        elif self.model_type == ModelType.VELOCITY and self.loss_space == LossSpace.MIN_SNR_GAMMA_V:
+            # Min-SNR-gamma (Hang et al.): w(t) = 3(1+sqrt(g))^2/g * min(t^2, g(1-t)^2), g=loss_lambda
+            # mean-one under U(0,1) for the Min-SNR-5 reference (g=5)
+            g = self.loss_lambda
+            t_ = path.expand_t_like_x(t, xt)
+            base = 3.0 * (1.0 + math.sqrt(g)) ** 2 / (g + 1e-8)
+            weight = base * th.minimum(t_ ** 2, g * (1.0 - t_) ** 2)
+            terms['loss'] = mean_flat(weight * ((model_output - ut) ** 2))
+        elif self.model_type == ModelType.VELOCITY and self.loss_space == LossSpace.LOGIT_NORMAL_V:
+            # SD3 logit-normal (m=0, s=1): w(t) = exp(-(logit(t)-m)^2/(2s^2)) / (s sqrt(2pi) t(1-t))
+            # mean-one under U(0,1) for (m=0, s=1)
+            t_ = path.expand_t_like_x(t, xt)
+            logit_t = th.log(t_ / (1.0 - t_ + 1e-8) + 1e-8)
+            weight = th.exp(-(logit_t ** 2) / 2.0) / (math.sqrt(2.0 * math.pi) * t_ * (1.0 - t_) + 1e-8)
+            terms['loss'] = mean_flat(weight * ((model_output - ut) ** 2))
+        elif self.model_type == ModelType.VELOCITY and self.loss_space == LossSpace.COSMAP_V:
+            # SD3 CosMap: w(t) = 2 / (pi (1 - 2t + 2t^2)), mean-one under U(0,1)
+            t_ = path.expand_t_like_x(t, xt)
+            weight = 2.0 / (math.pi * (1.0 - 2.0 * t_ + 2.0 * t_ ** 2) + 1e-8)
+            terms['loss'] = mean_flat(weight * ((model_output - ut) ** 2))
+        elif self.model_type == ModelType.VELOCITY and self.loss_space == LossSpace.RFPP_V:
+            # RF++ U-shaped (Lee et al.): w(t) = 2 cosh(a(t-1/2)) / sinh(a), a=4, mean-one under U(0,1)
+            _a_rfpp = 4.0
+            t_ = path.expand_t_like_x(t, xt)
+            weight = 2.0 * th.cosh(_a_rfpp * (t_ - 0.5)) / (math.sinh(_a_rfpp) + 1e-8)
             terms['loss'] = mean_flat(weight * ((model_output - ut) ** 2))
         else:
             _, drift_var = self.path_sampler.compute_drift(xt, t)
@@ -637,8 +676,7 @@ class Sampler:
         - reverse: whether solving the ODE in reverse (data to noise); default to False
         - t0_override: if set, use this as the ODE start time instead of check_interval result
         - t1_override: if set, use this as the ODE end time instead of check_interval result
-          (used by TM2T: pretrained model runs t0→m via t1_override=m,
-                         TM2T model runs m→1 via t0_override=m)
+          (useful when composing two models along the interpolant path)
         """
         drift = self.drift
 

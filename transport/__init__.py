@@ -11,7 +11,6 @@ def create_transport(
     scale_loss=False,
     loss_lambda=1.0,
     extra_scale=None,
-    min_snr=False,
 ):
     """function for creating Transport object
     **Note**: model prediction defaults to velocity
@@ -47,8 +46,6 @@ def create_transport(
         loss_space_type = LossSpace.TARGET
     elif loss_space == "noise":
         loss_space_type = LossSpace.NOISE
-    elif loss_space == "min_snr":
-        loss_space_type = LossSpace.MIN_SNR
     elif loss_space == "constant_blend_xv":
         loss_space_type = LossSpace.CONSTANT_BLEND_XV
     elif loss_space == "linear_blend_xv":
@@ -77,6 +74,18 @@ def create_transport(
         loss_space_type = LossSpace.VANILLA_WEIGHTING_V
     elif loss_space == "straight_weighting_v":
         loss_space_type = LossSpace.STRAIGHT_WEIGHTING_V
+    elif loss_space == "snr_v":
+        loss_space_type = LossSpace.SNR_V
+    elif loss_space == "kg_v":
+        loss_space_type = LossSpace.KG_V
+    elif loss_space == "min_snr_gamma_v":
+        loss_space_type = LossSpace.MIN_SNR_GAMMA_V
+    elif loss_space == "logit_normal_v":
+        loss_space_type = LossSpace.LOGIT_NORMAL_V
+    elif loss_space == "cosmap_v":
+        loss_space_type = LossSpace.COSMAP_V
+    elif loss_space == "rfpp_v":
+        loss_space_type = LossSpace.RFPP_V
     else:
         # default: match model type
         loss_space_type = LossSpace.TARGET if model_type == ModelType.TARGET else LossSpace.VELOCITY
@@ -113,7 +122,6 @@ def create_transport(
         scale_loss=scale_loss,
         loss_lambda=loss_lambda,
         extra_scale=extra_scale,
-        min_snr=min_snr,
     )
     
     return state

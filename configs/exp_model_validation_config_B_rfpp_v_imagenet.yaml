@@ -1,0 +1,49 @@
+# ============================================================
+# Configuration for exp_model_validation.py
+# Model: SiT-B-2  |  rfpp_v  |  ImageNet 256
+# NOTE: `checkpoint_dir` matches the results-dir name produced by
+# train.py. The runtime experiment index prefix (e.g. `166-`) is
+# omitted here — after training, either rename the results dir to
+# strip the index, or prepend the index to the path below.
+# ============================================================
+
+experiment:
+  name: "performance_SiT_B_rfpp_v_imagenet"
+  experiments_base_dir: "./experiment"
+
+checkpoint:
+  checkpoint_dir: "./results/SiT-B-2-Linear-velocity-None-rfpp_v-IS256-BS1024-imagenet/checkpoints/"
+  steps: [25000, 50000, 75000, 100000, 125000, 150000, 175000, 200000]
+  use_ema: true
+  skip_missing: true
+
+model_overrides:
+  model: null
+  image_size: null
+  num_classes: null
+  vae: null
+  path_type: null
+  prediction: null
+  loss_weight: null
+  sample_eps: null
+  train_eps: null
+
+eval:
+  num_images: 50000
+  batch_size: 256
+  fid_batch_size: 256
+  fid_chunk_size: 5000
+  seed: 42
+
+data:
+  ref_data_path: "/scratch/project/prj-02-visual-ai/hkzhang/ILSVRC/Data/CLS-LOC/val"
+  num_ref_images: 50000
+
+sampling:
+  cfg_scale: [1.0]
+  num_sampling_steps: 50
+  sampling_method: "euler"
+  atol: 1.0e-6
+  rtol: 1.0e-3
+
+device: "cuda:0"

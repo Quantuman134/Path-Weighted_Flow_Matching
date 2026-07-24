@@ -21,11 +21,10 @@ transport:
   path_type: 'Linear'  # Path type: 'Linear', 'GVP', or 'VP'
   prediction: 'velocity' # Prediction type: 'velocity', 'score', or 'noise'
   loss_weight: null  # Loss weight: null, 'velocity', or 'likelihood'
-  loss_space: 'linear_blend_xv'  # Loss space: null=default, 'velocity', 'target', 'noise', 'min_snr', 'constant_blend_xv', 'linear_blend_xv'
+  loss_space: 'linear_blend_xv'  # Loss space: null=default, 'velocity', 'target', 'noise', 'constant_blend_xv', 'linear_blend_xv', 'vanilla_weighting_v', 'straight_weighting_v', 'snr_v', 'kg_v', 'min_snr_gamma_v', 'logit_normal_v', 'cosmap_v', 'rfpp_v'
   sample_eps: null  # Optional: Sampling epsilon (float)
   train_eps: null  # Optional: Training epsilon (float)
-  loss_lambda: 1.0  # Hyperparameter for vanilla_weighting_v and straight_weighting_v loss spaces
-  min_snr: false  # Apply min-SNR suppression to vanilla_weighting_v (b = min(1, 5*(1-t)^2))
+  loss_lambda: 1.0  # Hyperparameter for vanilla_weighting_v, straight_weighting_v, min_snr_gamma_v loss spaces
 
 # Training Settings
 training:

@@ -96,7 +96,6 @@ def config_to_args(config):
     args.sample_eps = config['transport'].get('sample_eps', None)
     args.train_eps = config['transport'].get('train_eps', None)
     args.loss_lambda = float(config['transport'].get('loss_lambda', 1.0))
-    args.min_snr = bool(config['transport'].get('min_snr', False))
 
     # Training settings
     args.scale_enable = bool(config['training'].get('scale_enable', False))
@@ -521,14 +520,12 @@ def main(args):
         if args.scale_enable:
             model_string_name = model_string_name + "-scaled"
         dataset_suffix = f"-{args.dataset_name}" if args.dataset_name else ""
-        _LAMBDA_LOSS_SPACES = {"vanilla_weighting_v", "straight_weighting_v"}
+        _LAMBDA_LOSS_SPACES = {"vanilla_weighting_v", "straight_weighting_v", "min_snr_gamma_v"}
         loss_space_suffix = (
             f"{args.loss_space}-lam{args.loss_lambda}"
             if args.loss_space in _LAMBDA_LOSS_SPACES
             else str(args.loss_space)
         )
-        if args.min_snr and args.loss_space == "vanilla_weighting_v":
-            loss_space_suffix += "-minsnr"
         experiment_name = f"{experiment_index:03d}-{model_string_name}-" \
                         f"{args.path_type}-{args.prediction}-{args.loss_weight}-{loss_space_suffix}" \
                         f"-IS{args.image_size}-BS{args.global_batch_size}{dataset_suffix}"
@@ -578,7 +575,6 @@ def main(args):
         scale_loss=args.scale_enable,
         loss_lambda=args.loss_lambda,
         extra_scale=args.extra_scale,
-        min_snr=args.min_snr,
     )  # default: velocity;
     transport_sampler = Sampler(transport)
     vae = AutoencoderKL.from_pretrained(f"stabilityai/sd-vae-ft-{args.vae}").to(device)

@@ -1,0 +1,394 @@
+<!DOCTYPE html>
+
+<html lang="en">
+<head>
+<meta charset="utf-8"/>
+<meta content="width=device-width, initial-scale=1" name="viewport"/>
+<meta content="light" name="color-scheme"/>
+<title>Mean-One Weighting Baselines for Velocity Flow Matching</title>
+<script>
+    window.MathJax = {
+      tex: {
+        inlineMath: [['\\(', '\\)']],
+        displayMath: [['\\[', '\\]']]
+      },
+      svg: { fontCache: 'global' }
+    };
+  </script>
+<script defer="" src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-svg.js"></script>
+<style>
+    :root {
+      --ink: #18212b;
+      --muted: #5d6873;
+      --line: #dbe2e8;
+      --paper: #ffffff;
+      --canvas: #f4f6f8;
+      --accent: #315c72;
+      --accent-soft: #eaf1f4;
+      --code: #f7f9fa;
+      --shadow: 0 10px 30px rgba(24, 33, 43, 0.07);
+    }
+
+    * { box-sizing: border-box; }
+
+    body {
+      margin: 0;
+      background: var(--canvas);
+      color: var(--ink);
+      font-family: Inter, ui-sans-serif, -apple-system, BlinkMacSystemFont,
+                   "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+      line-height: 1.55;
+    }
+
+    a {
+      color: var(--accent);
+      text-underline-offset: 3px;
+    }
+
+    .page {
+      width: min(1060px, calc(100% - 28px));
+      margin: 28px auto 56px;
+    }
+
+    header {
+      padding: 36px 40px;
+      border-radius: 16px;
+      background: linear-gradient(135deg, #183747, #315c72);
+      color: #fff;
+      box-shadow: var(--shadow);
+    }
+
+    .eyebrow {
+      margin: 0 0 8px;
+      font-size: 0.78rem;
+      font-weight: 750;
+      letter-spacing: 0.11em;
+      text-transform: uppercase;
+      opacity: 0.78;
+    }
+
+    h1 {
+      margin: 0;
+      font-size: clamp(1.9rem, 4.5vw, 3rem);
+      line-height: 1.1;
+      letter-spacing: -0.035em;
+    }
+
+    .subtitle {
+      max-width: 780px;
+      margin: 15px 0 0;
+      color: rgba(255,255,255,0.84);
+    }
+
+    .setup {
+      margin-top: 22px;
+      padding: 24px 28px;
+      background: var(--paper);
+      border: 1px solid var(--line);
+      border-radius: 13px;
+      box-shadow: 0 5px 18px rgba(24,33,43,0.04);
+    }
+
+    .setup h2,
+    .references h2 {
+      margin: 0 0 12px;
+      font-size: 1.22rem;
+    }
+
+    .setup p {
+      margin: 6px 0;
+    }
+
+    .formula {
+      overflow-x: auto;
+      padding: 11px 14px;
+      border-radius: 9px;
+      background: var(--code);
+      border: 1px solid #e5eaee;
+      text-align: center;
+    }
+
+    .grid {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 18px;
+      margin-top: 20px;
+    }
+
+    .card {
+      min-width: 0;
+      padding: 23px 24px;
+      background: var(--paper);
+      border: 1px solid var(--line);
+      border-radius: 13px;
+      box-shadow: 0 5px 18px rgba(24,33,43,0.04);
+    }
+
+    .card h2 {
+      margin: 0;
+      font-size: 1.15rem;
+      letter-spacing: -0.015em;
+    }
+
+    .badge {
+      display: inline-block;
+      margin: 8px 0 13px;
+      padding: 3px 8px;
+      border-radius: 999px;
+      background: var(--accent-soft);
+      color: var(--accent);
+      font-size: 0.74rem;
+      font-weight: 760;
+      letter-spacing: 0.04em;
+      text-transform: uppercase;
+    }
+
+    .parameters {
+      margin: 12px 0 0;
+      color: var(--muted);
+      font-size: 0.9rem;
+    }
+
+    .source {
+      margin: 14px 0 0;
+      font-size: 0.86rem;
+      color: var(--muted);
+    }
+
+    .references {
+      margin-top: 20px;
+      padding: 24px 28px;
+      background: var(--paper);
+      border: 1px solid var(--line);
+      border-radius: 13px;
+    }
+
+    .references ul {
+      margin: 8px 0 0 1.15rem;
+      padding: 0;
+    }
+
+    .references li {
+      margin: 8px 0;
+    }
+
+    footer {
+      margin-top: 16px;
+      color: var(--muted);
+      font-size: 0.82rem;
+      text-align: center;
+    }
+
+    @media (max-width: 760px) {
+      .page { width: min(100% - 18px, 1060px); margin-top: 9px; }
+      header { padding: 28px 23px; border-radius: 13px; }
+      .grid { grid-template-columns: 1fr; }
+      .setup, .card, .references { padding: 21px 19px; }
+    }
+
+    @media print {
+      body { background: white; }
+      .page { width: 100%; margin: 0; }
+      header, .setup, .card, .references { box-shadow: none; }
+      .card { break-inside: avoid; }
+      a { color: inherit; }
+    }
+  </style>
+</head>
+<body>
+<div class="page">
+<header>
+<p class="eyebrow">Baseline reference</p>
+<h1>Mean-One Weightings for the Velocity Objective</h1>
+<p class="subtitle">Closed-form, mean-one baseline weights under uniform timestep sampling. PW-C and PW-S are excluded.</p>
+</header>
+<section class="setup">
+<h2>Convention</h2>
+<p>
+        Noise-to-data time: \(t=0\) is noise and \(t=1\) is data, with \(t\sim\mathcal U(0,1)\).
+      </p>
+<div class="formula">
+        \[
+        \mathcal L_v
+        =
+        \mathbb E_{t\sim\mathcal U(0,1)}
+        \left[
+          \bar w(t)\,
+          \left\|v_\theta(x_t,t)-v^\star(x_t,t)\right\|_2^2
+        \right],
+        \qquad
+        \int_0^1 \bar w(t)\,dt=1.
+        \]
+      </div>
+</section>
+<main class="grid">
+<article class="card">
+<h2>Uniform Flow Matching</h2>
+<span class="badge">Reference</span>
+<div class="formula">
+          \[
+          \boxed{\bar w_{\mathrm{FM}}(t)=1}
+          \]
+        </div>
+</article>
+<article class="card">
+<h2>SNR Weighting</h2>
+<span class="badge">Late emphasis</span>
+<div class="formula">
+          \[
+          \boxed{\bar w_{\mathrm{SNR}}(t)=3t^2}
+          \]
+        </div>
+<p class="source">
+          Source:
+          <a href="https://arxiv.org/abs/2603.06454" rel="noopener noreferrer" target="_blank">
+            Gagneux et al., Training Flow Matching
+          </a>
+</p>
+</article><article class="card"><h2>Kingma–Gao Sigmoid Monotonic</h2><span class="badge">ELBO-motivated monotonic</span><div class="formula">
+          \[
+          \boxed{
+          \bar w_{\mathrm{KG}}(t)
+          =
+          \frac{1}{Z_{\mathrm{KG}}}
+          \frac{2t(1-t)}
+          {(1-t)^2+e^{-2}t^2}
+          }
+          \]
+          \[
+          Z_{\mathrm{KG}}
+          =
+          \int_0^1
+          \frac{2t(1-t)}
+          {(1-t)^2+e^{-2}t^2}\,dt
+          \approx 1.373260287.
+          \]
+</div><p class="parameters">Configuration: \(w(\lambda)=\operatorname{sigmoid}(-\lambda+2)\), \(\lambda(t)=2\log\frac{t}{1-t}\).</p><p class="source">Source: <a href="https://arxiv.org/abs/2303.00848" rel="noopener noreferrer" target="_blank">Kingma &amp; Gao, Understanding Diffusion Objectives as the ELBO with Simple Data Augmentation</a></p></article>
+<article class="card">
+<h2>Min-SNR-\(\gamma\)</h2>
+<span class="badge">Clamped SNR</span>
+<div class="formula">
+          \[
+          \boxed{
+          \bar w_{\mathrm{MinSNR}}(t;\gamma)
+          =
+          \frac{3(1+\sqrt{\gamma})^2}{\gamma}
+          \min\!\left\{t^2,\gamma(1-t)^2\right\}
+          }
+          \]
+        </div>
+<p class="parameters">Default: \(\gamma=5\).</p>
+<p class="source">
+          Source:
+          <a href="https://arxiv.org/abs/2303.09556" rel="noopener noreferrer" target="_blank">
+            Hang et al., Efficient Diffusion Training via Min-SNR
+          </a>
+</p>
+</article>
+<article class="card">
+<h2>SD3 Logit-Normal</h2>
+<span class="badge">Mid emphasis</span>
+<div class="formula">
+          \[
+          \boxed{
+          \bar w_{\mathrm{LN}}(t;m,s)
+          =
+          \frac{
+            \exp\!\left[
+              -\frac{\left(\operatorname{logit}(t)-m\right)^2}{2s^2}
+            \right]
+          }{
+            s\sqrt{2\pi}\,t(1-t)
+          }
+          }
+          \]
+        </div>
+<p class="parameters">SD3 default comparator: \(m=0,\;s=1\).</p>
+<p class="source">
+          Source:
+          <a href="https://arxiv.org/abs/2403.03206" rel="noopener noreferrer" target="_blank">
+            Esser et al., Stable Diffusion 3
+          </a>
+</p>
+</article>
+<article class="card">
+<h2>SD3 CosMap</h2>
+<span class="badge">Symmetric bump</span>
+<div class="formula">
+          \[
+          \boxed{
+          \bar w_{\mathrm{CosMap}}(t)
+          =
+          \frac{2}{
+            \pi\left(1-2t+2t^2\right)
+          }
+          }
+          \]
+        </div>
+<p class="source">
+          Source:
+          <a href="https://arxiv.org/abs/2403.03206" rel="noopener noreferrer" target="_blank">
+            Esser et al., Stable Diffusion 3
+          </a>
+</p>
+</article>
+<article class="card">
+<h2>RF++ U-Shaped Weighting</h2>
+<span class="badge">Endpoint emphasis</span>
+<div class="formula">
+          \[
+          \boxed{
+          \bar w_{\mathrm{RF++}}(t;a)
+          =
+          \frac{a}{
+            2(e^a-1)
+          }
+          \left[
+            e^{at}+e^{a(1-t)}
+          \right]
+          }
+          \]
+        </div>
+<p class="parameters">
+          RF++ setting: \(a=4\). Equivalent form:
+          \(\bar w(t)=2\cosh(4(t-\tfrac12))/\sinh(2)\).
+        </p>
+<p class="source">
+          Source:
+          <a href="https://arxiv.org/abs/2405.20320" rel="noopener noreferrer" target="_blank">
+            Lee et al., Improving the Training of Rectified Flows
+          </a>
+</p>
+</article>
+</main>
+<section class="references">
+<h2>References</h2>
+<ul><li><a href="https://arxiv.org/abs/2303.00848" rel="noopener noreferrer" target="_blank">Kingma &amp; Gao — Understanding Diffusion Objectives as the ELBO with Simple Data Augmentation</a></li>
+<li>
+<a href="https://arxiv.org/abs/2603.06454" rel="noopener noreferrer" target="_blank">
+            Gagneux et al. — Training Flow Matching: The Role of Weighting and Parameterization
+          </a>
+</li>
+<li>
+<a href="https://arxiv.org/abs/2303.09556" rel="noopener noreferrer" target="_blank">
+            Hang et al. — Efficient Diffusion Training via Min-SNR Weighting Strategy
+          </a>
+</li>
+<li>
+<a href="https://arxiv.org/abs/2403.03206" rel="noopener noreferrer" target="_blank">
+            Esser et al. — Scaling Rectified Flow Transformers for High-Resolution Image Synthesis
+          </a>
+</li>
+<li>
+<a href="https://arxiv.org/abs/2405.20320" rel="noopener noreferrer" target="_blank">
+            Lee et al. — Improving the Training of Rectified Flows
+          </a>
+</li>
+</ul>
+</section>
+<footer>
+      All weights are normalized to unit expectation under uniform continuous-time sampling.
+    </footer>
+</div>
+</body>
+</html>
