@@ -14,6 +14,26 @@ experiment:
   experiments_base_dir: "./experiment"
   mode: "wavg"                     # 'wavg' -> Experiment B
 
+# ── checkpoint selection ─────────────────────────────────────────────────
+# path : local .pt file to load.
+#          - If empty / null / omitted, the pretrained SiT-XL/2 256x256
+#            checkpoint is auto-downloaded via download.find_model
+#            (identical to sample_ddp.py's --ckpt None path).
+#          - Otherwise, torch.load is called; accepts both train.py
+#            checkpoints ('ema'/'model'/'args' keys) and flat state_dicts.
+# use_ema: only meaningful when the checkpoint has both 'ema' and 'model'
+#          keys (train.py format). Selects which weight set to load.
+# The rest are optional overrides; leave them commented to use the
+# checkpoint's own 'args' (train.py format) or, failing that, the model:
+# block below.
+checkpoint:
+  path: ""                         # e.g. "./results/XXX-<run-name>/checkpoints/0100000.pt"
+  use_ema: true
+  # model_arch: "SiT-XL/2"
+  # learn_sigma: true
+  # num_classes: 1000
+  # image_size: 256
+
 model:
   num_classes: 1000
   image_size: 256
