@@ -1,0 +1,53 @@
+# ============================================================
+# Configuration for exp_w_avg_finite_difference.py -- Experiment B.
+#
+# w_avg(t) estimation: at eta_star selected by Experiment A, estimate
+# w_avg(t) at 16 solver-aligned checkpoints along the pretrained
+# SiT-XL/2 Euler trajectory, and compare with the moment-matched
+# scalar weight A(t)^2 = lam^2 / ((1-t)^2 + lam^2 t^2).
+#
+# Model: pretrained SiT-XL/2, ImageNet 256x256 (learn_sigma=True).
+# ============================================================
+
+experiment:
+  name: "w_avg_finite_difference_wavg"
+  experiments_base_dir: "./experiment"
+  mode: "wavg"                     # 'wavg' -> Experiment B
+
+model:
+  num_classes: 1000
+  image_size: 256
+
+solver:
+  num_steps: 50
+
+base_trajectories:
+  # Experiment B uses N=320 base trajectories (see plan section 4.3).
+  # With 8 GPUs each rank owns 320/8 = 40 trajectories -> we run all of them in
+  # one batch per rank so the 8 GPUs process 8 * 40 = 320 samples in parallel.
+  N: 320
+  batch_size: 40
+
+probes:
+  K: 64
+  # Each probe forward evaluates the paired (+dq, -dq) states, so the
+  # actual per-rank batch is 2*probe_batch. With 8 GPUs and probe_batch=64
+  # we get 8 * 2 * 64 = 1024 simultaneous samples across the cluster.
+  probe_batch: 64
+
+wavg:
+  # Fill this in after Experiment A picks the plateau eta. A likely value is 1e-3.
+  eta_star: 1.0e-3
+
+  # 16 solver-aligned checkpoints from the 50-step trajectory.
+  # These correspond to  t_j = s_j / 50  in
+  #   s in {0, 3, 7, 10, 13, 17, 20, 23, 27, 30, 33, 37, 40, 43, 47, 50}.
+  # The identity map at s=50 (t=1) is handled analytically (w_avg(1)=1).
+  solver_indices: [0, 3, 7, 10, 13, 17, 20, 23, 27, 30, 33, 37, 40, 43, 47, 50]
+
+  # Comparison weight A(t)^2 uses this lambda. lam=1 is the plain 'vanilla' case.
+  lam: 1.0
+  bootstrap_iters: 2000
+
+seed: 42
+device: "cuda:0"

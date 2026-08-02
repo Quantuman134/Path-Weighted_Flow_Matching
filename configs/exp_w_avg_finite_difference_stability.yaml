@@ -1,0 +1,55 @@
+# ============================================================
+# Configuration for exp_w_avg_finite_difference.py -- Experiment A.
+#
+# Stability check: for t in {0, 0.5, 0.9}, sweep the dimensionless
+# perturbation ratio eta in {1e-5, 1e-4, 1e-3, 1e-2} to find the
+# largest eta that lies inside a stable plateau (mean estimate
+# changes by <5% and paired median disagreement <5%).
+#
+# Model: pretrained SiT-XL/2, ImageNet 256x256 (learn_sigma=True).
+# ============================================================
+
+experiment:
+  name: "w_avg_finite_difference_stability"
+  experiments_base_dir: "./experiment"
+  mode: "stability"                # 'stability' -> Experiment A
+
+model:
+  # SiT-XL/2 is the only pretrained model; both fields are fixed.
+  num_classes: 1000
+  image_size: 256
+
+solver:
+  # Deterministic Euler solver. Trajectories use num_steps steps from t=0 to t=1.
+  # Everything in the plan (s_j, remaining-step counts, budgets) is defined
+  # w.r.t. this same setting; do not change without recomputing the budget.
+  num_steps: 50
+
+base_trajectories:
+  # Experiment A uses N=512 base trajectories (see plan section 3.4).
+  # With 8 GPUs each rank owns 512/8 = 64 trajectories -> we run all of them in
+  # one batch per rank so the 8 GPUs process 8 * 64 = 512 samples in parallel.
+  N: 512
+  batch_size: 64                   # per-forward batch during base sampling
+
+probes:
+  # K=64 independent Rademacher probes per cached state.
+  K: 64
+  # Each probe forward evaluates the paired (+dq, -dq) states, so the
+  # actual per-rank batch is 2*probe_batch. With 8 GPUs and probe_batch=64
+  # we get 8 * 2 * 64 = 1024 simultaneous samples across the cluster.
+  probe_batch: 64                  # per-forward pair batch (2*probe_batch items)
+
+stability:
+  # Times at which stability is evaluated.
+  #   t = 0.0 -> solver index 0  (longest integration, 50 remaining steps)
+  #   t = 0.5 -> solver index 25 (25 remaining steps)
+  #   t = 0.9 -> solver index 45 (5 remaining steps)
+  times: [0.0, 0.5, 0.9]
+  etas:  [1.0e-5, 1.0e-4, 1.0e-3, 1.0e-2]
+  # Threshold used to auto-suggest eta_star at the end of the run: the largest
+  # eta whose adjacent-eta median disagreement is below this at every time.
+  plateau_threshold: 0.05
+
+seed: 42
+device: "cuda:0"
