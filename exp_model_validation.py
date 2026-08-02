@@ -23,6 +23,7 @@ import json
 import os
 import shutil
 import sys
+from glob import glob
 
 import matplotlib.pyplot as plt
 import numpy as np
@@ -86,7 +87,7 @@ def resolve_model_args(ckpt_args, overrides: dict) -> argparse.Namespace:
     Raises ValueError for required fields missing from both sources.
     """
     REQUIRED = ["model", "image_size", "num_classes", "vae", "path_type", "prediction"]
-    OPTIONAL = ["loss_weight", "sample_eps", "train_eps"]
+    OPTIONAL = ["loss_weight", "sample_eps", "train_eps", "latent_scale"]
 
     result = argparse.Namespace()
     for key in REQUIRED + OPTIONAL:
@@ -101,7 +102,49 @@ def resolve_model_args(ckpt_args, overrides: dict) -> argparse.Namespace:
                     f"in model_overrides. Please add it to the config."
                 )
             setattr(result, key, ckpt_val)
+
+    # Extra scale baked into the training latents (data.latent_scale in the
+    # training config). Checkpoints written before it existed have no such field,
+    # and 1.0 reproduces the original behaviour exactly.
+    result.latent_scale = 1.0 if result.latent_scale is None else float(result.latent_scale)
+    if result.latent_scale <= 0:
+        raise ValueError(f"latent_scale must be > 0, got {result.latent_scale}")
     return result
+
+
+def resolve_checkpoint_dir(checkpoint_dir: str) -> str:
+    """Locate a checkpoint directory, tolerating train.py's `NNN-` name prefix.
+
+    train.py prefixes every run directory with a running index that is not known
+    when the validation config is written, so `results/<run-name>/checkpoints`
+    also matches `results/053-<run-name>/checkpoints`. The match must be unique.
+    """
+    if os.path.isdir(checkpoint_dir):
+        return checkpoint_dir
+
+    norm = checkpoint_dir.rstrip("/")
+    leaf = os.path.basename(norm)                    # "checkpoints"
+    run_dir = os.path.dirname(norm)                  # "results/<run-name>"
+    run_name = os.path.basename(run_dir)
+    results_dir = os.path.dirname(run_dir) or "."
+    if not run_name:
+        raise FileNotFoundError(f"Checkpoint directory not found: {checkpoint_dir}")
+
+    matches = [
+        os.path.join(m, leaf) for m in sorted(glob(os.path.join(results_dir, f"*{run_name}")))
+        if os.path.isdir(os.path.join(m, leaf))
+    ]
+    if len(matches) == 1:
+        return matches[0]
+    if len(matches) > 1:
+        raise ValueError(
+            f"Checkpoint directory '{checkpoint_dir}' is ambiguous — "
+            f"{len(matches)} runs match: {matches}. Use the full path in the config."
+        )
+    raise FileNotFoundError(
+        f"Checkpoint directory not found: {checkpoint_dir} "
+        f"(also tried '{os.path.join(results_dir, '*' + run_name)}')"
+    )
 
 
 # ─── Model / VAE / Transport ─────────────────────────────────────────────────
@@ -210,6 +253,7 @@ def generate_images_rank(
     seed: int,
     rank: int,
     world_size: int,
+    latent_scale: float = 1.0,
 ) -> np.ndarray:
     """
     Generate this rank's share of images in memory.
@@ -254,7 +298,9 @@ def generate_images_rank(
         if use_cfg:
             samples, _ = samples.chunk(2, dim=0)
 
-        decoded = vae.decode(samples / 0.18215).sample
+        # Undo both the SD-VAE constant and any extra scale baked into the
+        # training latents, otherwise the decoded images are mis-scaled.
+        decoded = vae.decode(samples / (0.18215 * latent_scale)).sample
         decoded = (decoded.clamp(-1.0, 1.0) + 1.0) / 2.0  # float32 [0, 1]
 
         # Convert to uint8 CPU immediately to free GPU memory
@@ -430,8 +476,10 @@ def main():
     barrier(world_size)
 
     # ── 3. Checkpoint config ─────────────────────────────────────────────────
-    ckpt_dir     = cfg["checkpoint"]["checkpoint_dir"]
+    ckpt_dir     = resolve_checkpoint_dir(cfg["checkpoint"]["checkpoint_dir"])
     steps        = cfg["checkpoint"]["steps"]
+    if rank == 0 and ckpt_dir != cfg["checkpoint"]["checkpoint_dir"]:
+        print(f"Checkpoints    : {ckpt_dir}")
     use_ema      = cfg["checkpoint"].get("use_ema", True)
     skip_missing = cfg["checkpoint"].get("skip_missing", False)
 
@@ -458,6 +506,8 @@ def main():
               f"num_classes={model_args.num_classes}")
         print(f"  vae={model_args.vae}, path_type={model_args.path_type}, "
               f"prediction={model_args.prediction}")
+        print(f"  latent_scale={model_args.latent_scale} "
+              f"(generated latents are divided by 0.18215 * latent_scale before decoding)")
 
     # ── 5. Build model, VAE, transport+sampler (all ranks) ───────────────────
     if rank == 0:
@@ -598,6 +648,7 @@ def main():
                 model_args.num_classes,
                 device,
                 seed, rank, world_size,
+                latent_scale=model_args.latent_scale,
             )
 
             # Gather to rank 0 (in-memory, no disk I/O)

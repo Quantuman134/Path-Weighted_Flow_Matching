@@ -1,0 +1,56 @@
+# ============================================================
+# Configuration for exp_model_validation.py
+# Model: SiT-B/2  |  vanilla_weighting_v lam=0.5  |  50k ImageNet subset, latent sigma 0.5
+# ============================================================
+
+experiment:
+  name: "performance_SiT_B_vanilla_05_imagenet50k_std05"
+  experiments_base_dir: "./experiment"
+
+checkpoint:
+  # train.py prefixes the run directory with a running index (e.g. "053-");
+  # exp_model_validation.py resolves it as long as the match is unique.
+  checkpoint_dir: "./results/SiT-B-2-scaled-Linear-velocity-None-vanilla_weighting_v-lam0.5-IS256-BS1024-imagenet50k-std0.5/checkpoints/"
+  steps: [25000, 50000, 75000, 100000, 125000, 150000, 175000, 200000]
+  use_ema: true
+  skip_missing: true
+
+model_overrides:
+  model: null
+  image_size: null
+  num_classes: null
+  vae: null
+  path_type: null
+  prediction: null
+  loss_weight: null
+  sample_eps: null
+  train_eps: null
+  # 1.0 = decode generated latents as-is (z / 0.18215), WITHOUT dividing out the
+  # dataset scale (0.6097561 for this run). This matches the reference
+  # images below. Set to null to instead read the true scale from the checkpoint
+  # and evaluate against true-colour reconstructions.
+  latent_scale: 1.0
+
+eval:
+  num_images: 50000
+  batch_size: 256
+  fid_batch_size: 256
+  fid_chunk_size: 5000
+  seed: 42
+
+data:
+  # FID reference: this subset's *own* images, decoded with the dataset scale
+  # left in (decode_latents.py --decode_mode scaled). Generated samples are
+  # decoded the same way (latent_scale = 1.0 above), so both sides of the FID
+  # live in the same pixel space.
+  ref_data_path: "/scratch/project/prj-02-visual-ai/hkzhang/ILSVRC/variance_subsets/imagenet50k_std0.5/reference_images/train"
+  num_ref_images: 50000
+
+sampling:
+  cfg_scale: [1.0]
+  num_sampling_steps: 50
+  sampling_method: "euler"
+  atol: 1.0e-6
+  rtol: 1.0e-3
+
+device: "cuda:0"

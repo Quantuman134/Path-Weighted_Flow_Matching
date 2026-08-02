@@ -13,7 +13,7 @@ experiment:
 
 checkpoint:
   checkpoint_dir: "./results/SiT-B-2-Linear-velocity-None-logit_normal_v-IS256-BS1024-imagenet/checkpoints/"
-  steps: [25000, 50000, 75000, 100000, 125000, 150000, 175000, 200000]
+  steps: [30000, 50000, 80000, 100000, 130000, 150000, 180000, 200000]
   use_ema: true
   skip_missing: true
 

@@ -1,0 +1,63 @@
+# Configuration for SiT Training -- SiT-XL/2, vanilla_weighting_v lam=0.8, Places365-Standard 256.
+#   1,803,460 train images @ BS1024 -> 1761 steps/epoch
+#   training.max_train_steps is the real stop (200,000 steps); `epochs` is
+#   only an upper bound so the run cannot end early.
+
+# Data Settings
+data:
+  data_path: /scratch/project/prj-02-visual-ai/hkzhang/places365/places365_standard/train
+  latent_data_path: /scratch/project/prj-02-visual-ai/hkzhang/places365/latents/train
+  packed_latent_data_path: /scratch/project/prj-02-visual-ai/hkzhang/places365/latents_packed/train
+  val_data_path: /scratch/project/prj-02-visual-ai/hkzhang/places365/places365_standard/val
+  dataset_name: places365
+
+# Model Settings
+model:
+  model: 'SiT-XL/2'  # Model architecture: SiT-XL/2, SiT-L/2, SiT-B/2, etc.
+  image_size: 256  # Image size: 256 or 512
+  num_classes: 365  # Number of classes in the dataset
+  vae: 'ema'  # VAE model: 'ema' or 'mse'
+
+# Transport Settings
+transport:
+  path_type: 'Linear'  # Path type: 'Linear', 'GVP', or 'VP'
+  prediction: 'velocity' # Prediction type: 'velocity', 'score', or 'noise'
+  loss_weight: null  # Loss weight: null, 'velocity', or 'likelihood'
+  loss_space: 'vanilla_weighting_v'  # vanilla_weighting_v lam=0.8
+  sample_eps: null  # Optional: Sampling epsilon (float)
+  train_eps: null  # Optional: Training epsilon (float)
+  loss_lambda: 0.8  # Hyperparameter for vanilla_weighting_v and straight_weighting_v loss spaces
+
+# Training Settings
+training:
+  epochs: 124  # Upper bound only -- max_train_steps stops the run first
+  max_train_steps: 200000  # Hard stop, so both datasets train for equal steps
+  global_batch_size: 1024  # Total batch size across all GPUs
+  global_seed: 42  # Random seed for reproducibility
+  num_workers: 20  # Number of data loading workers
+  scale_enable: true  # Enable loss scaling for velocity prediction model
+  extra_scale: 0.845  # Empirical correction factor used by the vanilla_weighting_v series
+
+# Logging Settings
+logging:
+  results_dir: 'results'  # Directory to save results
+  log_every: 10  # Log training info every N steps
+  ckpt_every: 10000  # Save checkpoint every N steps
+  sample_every: 10000  # Generate samples every N steps
+  wandb: true  # Enable Weights & Biases logging
+  wandb_key: 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  # W&B API key (can also use env var WANDB_KEY)
+  wandb_entity: 'TAMU-Visual-AI'  # W&B entity name (can also use env var ENTITY)
+  wandb_project: 'SiT'  # W&B project name (can also use env var PROJECT)
+
+# Validation Settings
+validation:
+  val_num_samples: 5000  # Number of samples to use for validation
+  val_log_images: 256  # Number of validation images to log to wandb
+
+# Sampling Settings
+sampling:
+  cfg_scale: 1.0  # Classifier-free guidance scale
+
+# Checkpoint Settings
+checkpoint:
+  ckpt: null  # Optional: Path to checkpoint to resume training from

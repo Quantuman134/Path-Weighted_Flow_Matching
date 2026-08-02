@@ -1,0 +1,50 @@
+# ============================================================
+# Configuration for exp_model_validation.py
+# Model: SiT-XL/2  |  vanilla_weighting_v lam=1.0  |  Food-101 256
+# ============================================================
+
+experiment:
+  name: "performance_SiT_XL_vanilla_10_food101"
+  experiments_base_dir: "./experiment"
+
+checkpoint:
+  # train.py prefixes the run directory with a running index (e.g. "053-");
+  # exp_model_validation.py resolves it as long as the match is unique.
+  checkpoint_dir: "./results/SiT-XL-2-scaled-Linear-velocity-None-vanilla_weighting_v-lam1.0-IS256-BS1024-food101/checkpoints/"
+  steps: [20000, 40000, 60000, 80000, 100000, 120000, 140000, 160000, 180000, 200000]
+  use_ema: true
+  skip_missing: true
+
+model_overrides:
+  model: null
+  image_size: null
+  num_classes: null
+  vae: null
+  path_type: null
+  prediction: null
+  loss_weight: null
+  sample_eps: null
+  train_eps: null
+
+eval:
+  num_images: 50000
+  batch_size: 256
+  fid_batch_size: 256
+  fid_chunk_size: 5000
+  seed: 42
+
+data:
+  # FID / IS reference: the *training* split of this dataset (75,750 images),
+  # randomly subsampled to num_ref_images. Both sides of the FID therefore live in
+  # the same distribution the model was fit to.
+  ref_data_path: "/scratch/project/prj-02-visual-ai/hkzhang/food101/train"
+  num_ref_images: 50000
+
+sampling:
+  cfg_scale: [1.0]
+  num_sampling_steps: 50
+  sampling_method: "euler"
+  atol: 1.0e-6
+  rtol: 1.0e-3
+
+device: "cuda:0"

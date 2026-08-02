@@ -81,6 +81,13 @@ def config_to_args(config):
     args.latent_data_path = config['data'].get('latent_data_path', None)
     args.packed_latent_data_path = config['data'].get('packed_latent_data_path', None)
     args.dataset_name = config['data'].get('dataset_name', None)
+    # Extra multiplicative factor baked into the stored latents (see
+    # build_variance_subset.py). 1.0 = the standard 0.18215-scaled latents.
+    # The dataset on disk is already scaled, so this is only used to undo the
+    # scale before VAE decoding (and to apply it when encoding raw images).
+    args.latent_scale = float(config['data'].get('latent_scale', 1.0))
+    if args.latent_scale <= 0:
+        raise ValueError(f"data.latent_scale must be > 0, got {args.latent_scale}")
     
     # Model settings
     args.model = config['model']['model']
@@ -102,6 +109,10 @@ def config_to_args(config):
     _extra_scale = config['training'].get('extra_scale', None)
     args.extra_scale = float(_extra_scale) if _extra_scale is not None else None
     args.epochs = int(config['training']['epochs'])
+    # Optional hard stop on optimisation steps; `epochs` must be large enough to
+    # reach it. null / absent -> run for the full `epochs`.
+    _max_steps = config['training'].get('max_train_steps', None)
+    args.max_train_steps = int(_max_steps) if _max_steps is not None else None
     args.global_batch_size = int(config['training']['global_batch_size'])
     args.global_seed = int(config['training']['global_seed'])
     args.num_workers = int(config['training']['num_workers'])
@@ -281,8 +292,8 @@ def validate_metrics(ema_model, vae, val_loader, transport_sampler, args, device
         if use_cfg:
             samples, _ = samples.chunk(2, dim=0)
         
-        # Decode from latent space
-        samples = vae.decode(samples / 0.18215).sample
+        # Decode from latent space (undo both 0.18215 and the dataset latent scale)
+        samples = vae.decode(samples / (0.18215 * args.latent_scale)).sample
         generated_images_list.append(samples.cpu())
     
     generated_images = torch.cat(generated_images_list, dim=0)  # (N, 3, H, W) in [-1, 1]
@@ -719,8 +730,18 @@ def main(args):
         sample_model_kwargs = dict(y=ys)
         model_fn = ema.forward
 
-    logger.info(f"Training for {args.epochs} epochs...")
+    if args.latent_scale != 1.0:
+        logger.info(f"Dataset latent scale: {args.latent_scale} "
+                    f"(latents on disk are already scaled; decoding divides it out)")
+    if args.max_train_steps is not None:
+        logger.info(f"Training for {args.epochs} epochs or {args.max_train_steps} steps, "
+                    f"whichever comes first...")
+    else:
+        logger.info(f"Training for {args.epochs} epochs...")
+    stop_training = False
     for epoch in range(start_epoch, args.epochs):
+        if stop_training:
+            break
         sampler.set_epoch(epoch)
         logger.info(f"Beginning epoch {epoch}...")
         for x, y in loader:
@@ -728,7 +749,8 @@ def main(args):
             y = y.to(device)
             if not use_latents:
                 with torch.no_grad():
-                    x = vae.encode(x).latent_dist.sample().mul_(0.18215)
+                    # Match the pre-scaled latent datasets when encoding on the fly.
+                    x = vae.encode(x).latent_dist.sample().mul_(0.18215 * args.latent_scale)
             model_kwargs = dict(y=y)
             loss_dict = transport.training_losses(model, x, model_kwargs)
             loss = loss_dict["loss"].mean()
@@ -786,7 +808,7 @@ def main(args):
 
                     if use_cfg: #remove null samples
                         samples, _ = samples.chunk(2, dim=0)
-                    samples = vae.decode(samples / 0.18215).sample
+                    samples = vae.decode(samples / (0.18215 * args.latent_scale)).sample
                     out_samples = torch.zeros((args.global_batch_size, 3, args.image_size, args.image_size), device=device)
                     dist.all_gather_into_tensor(out_samples, samples)
 
@@ -816,6 +838,14 @@ def main(args):
                         )
                     model.train()  # Set back to training mode
                     logger.info("Validation done.")
+
+            # Hard stop on the step budget. Checked after the checkpoint/sampling
+            # blocks so the final step is still checkpointed when it lands on a
+            # multiple of ckpt_every.
+            if args.max_train_steps is not None and train_steps >= args.max_train_steps:
+                logger.info(f"Reached max_train_steps={args.max_train_steps}; stopping.")
+                stop_training = True
+                break
 
     model.eval()  # important! This disables randomized embedding dropout
     # do any sampling/FID calculation/etc. with ema (or model) in eval mode ...

@@ -1,10 +1,8 @@
 # ============================================================
 # Configuration for exp_model_validation.py
 # Model: SiT-XL-2  |  cosmap_v  |  ImageNet 256
-# NOTE: `checkpoint_dir` matches the results-dir name produced by
-# train.py. The runtime experiment index prefix (e.g. `166-`) is
-# omitted here — after training, either rename the results dir to
-# strip the index, or prepend the index to the path below.
+# NOTE: `checkpoint_dir` is the results dir with train.py's running
+# index prefix stripped (this run was training index 040-045).
 # ============================================================
 
 experiment:
@@ -13,7 +11,7 @@ experiment:
 
 checkpoint:
   checkpoint_dir: "./results/SiT-XL-2-Linear-velocity-None-cosmap_v-IS256-BS1024-imagenet/checkpoints/"
-  steps: [20000, 40000, 60000, 80000, 100000, 120000, 140000, 160000, 180000, 200000]
+  steps: [50000, 100000, 150000, 200000]
   use_ema: true
   skip_missing: true
 

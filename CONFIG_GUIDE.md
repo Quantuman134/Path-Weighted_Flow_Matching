@@ -41,7 +41,14 @@ configs/
 data:
   data_path: '/path/to/train'  # REQUIRED
   val_data_path: '/path/to/val'  # Optional for validation
+  latent_scale: 1.0  # Optional: extra factor baked into pre-encoded latents
 ```
+
+`latent_scale` (default `1.0`) describes latents that were stored pre-multiplied
+by a constant — the variance subsets built by `build_variance_subset.py`. The
+data on disk is used as-is; the factor is divided out before VAE decoding
+(W&B samples, validation FID) and applied when raw images are encoded on the
+fly. Pass the same value to `sample_ddp.py --latent-scale`.
 
 #### 2. Model Settings
 ```yaml
@@ -72,10 +79,15 @@ transport:
 ```yaml
 training:
   epochs: 1400              # Training epochs
+  max_train_steps: null     # Optional: hard stop after N optimisation steps
   global_batch_size: 256    # Total batch across all GPUs
   global_seed: 0            # Random seed
   num_workers: 4            # Data loading workers
 ```
+
+`max_train_steps` (default `null` = disabled) stops training once the step
+count is reached, so a run can target a step budget instead of an epoch count.
+`epochs` must still be large enough to reach it.
 
 #### 5. Logging Settings
 ```yaml

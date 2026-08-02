@@ -9,7 +9,7 @@ experiment:
 
 checkpoint:
   checkpoint_dir: "./results/SiT-B-2-scaled-Linear-velocity-None-vanilla_weighting_v-lam1.0-IS256-BS1024-imagenet-pretrained/checkpoints/"
-  steps: [25000, 50000, 75000, 100000, 125000, 150000, 175000, 200000]
+  steps: [25000, 50000, 75000, 100000, 125000, 150000, 175000, 200000, 250000, 300000, 350000, 400000]
   use_ema: true
   skip_missing: true
 

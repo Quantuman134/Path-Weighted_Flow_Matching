@@ -1,0 +1,67 @@
+# Configuration for SiT Training -- latent-variance study.
+# Path-weighted (vanilla), lambda = 2.0
+# Dataset: 50,000 ImageNet images whose VAE latents are rescaled to
+#          sigma = 0.5 (source sigma 0.82, scale 0.6097561).
+# Budget : 200,000 steps at batch 1024 (48 steps/epoch ->
+#          max_train_steps stops the run inside epoch 4166).
+
+# Data Settings
+data:
+  data_path: /scratch/project/prj-02-visual-ai/hkzhang/ILSVRC/Data/CLS-LOC/train  # raw-image fallback only
+  latent_data_path: null
+  packed_latent_data_path: /scratch/project/prj-02-visual-ai/hkzhang/ILSVRC/variance_subsets/imagenet50k_std0.5/latents_packed/train
+  val_data_path: /scratch/project/prj-02-visual-ai/hkzhang/ILSVRC/Data/CLS-LOC/val
+  dataset_name: imagenet50k-std0.5
+  latent_scale: 0.6097561  # already baked into the stored latents; divided out before VAE decoding
+
+
+# Model Settings
+model:
+  model: 'SiT-B/2'  # Model architecture: SiT-XL/2, SiT-L/2, SiT-B/2, etc.
+  image_size: 256  # Image size: 256 or 512
+  num_classes: 1000  # Number of classes in the dataset
+  vae: 'ema'  # VAE model: 'ema' or 'mse'
+
+# Transport Settings
+transport:
+  path_type: 'Linear'  # Path type: 'Linear', 'GVP', or 'VP'
+  prediction: 'velocity' # Prediction type: 'velocity', 'score', or 'noise'
+  loss_weight: null  # Loss weight: null, 'velocity', or 'likelihood'
+  loss_space: 'vanilla_weighting_v'  # w(t) = lambda^2 / ((1-t)^2 + lambda^2 t^2)
+  sample_eps: null  # Optional: Sampling epsilon (float)
+  train_eps: null  # Optional: Training epsilon (float)
+  loss_lambda: 2.0  # Hyperparameter for vanilla_weighting_v / straight_weighting_v
+
+# Training Settings
+training:
+  epochs: 4200  # Upper bound; max_train_steps is the real stopping criterion
+  max_train_steps: 200000  # Hard stop after this many optimisation steps
+  global_batch_size: 1024  # Total batch size across all GPUs
+  global_seed: 42  # Random seed for reproducibility
+  num_workers: 20  # Number of data loading workers
+  scale_enable: true  # Post-hoc loss scaling (velocity models only)
+  extra_scale: 0.845  # Empirical correction factor applied on top of the analytic scale
+
+# Logging Settings
+logging:
+  results_dir: 'results'  # Directory to save results
+  log_every: 10  # Log training info every N steps
+  ckpt_every: 25000  # Save checkpoint every N steps (8 checkpoints over the run)
+  sample_every: 25000  # Generate samples + run validation every N steps
+  wandb: true  # Enable Weights & Biases logging
+  wandb_key: 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  # W&B API key (can also use env var WANDB_KEY)
+  wandb_entity: 'TAMU-Visual-AI'  # W&B entity name (can also use env var ENTITY)
+  wandb_project: 'SiT'  # W&B project name (can also use env var PROJECT)
+
+# Validation Settings
+validation:
+  val_num_samples: 5000  # Number of samples to use for validation
+  val_log_images: 256  # Number of validation images to log to wandb
+
+# Sampling Settings
+sampling:
+  cfg_scale: 1.0  # Classifier-free guidance scale
+
+# Checkpoint Settings
+checkpoint:
+  ckpt: null  # Train from scratch -- resuming would bias the comparison

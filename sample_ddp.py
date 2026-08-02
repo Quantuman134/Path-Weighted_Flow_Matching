@@ -174,7 +174,7 @@ def main(mode, args):
         if using_cfg:
             samples, _ = samples.chunk(2, dim=0)  # Remove null class samples
 
-        samples = vae.decode(samples / 0.18215).sample
+        samples = vae.decode(samples / (0.18215 * args.latent_scale)).sample
         samples = torch.clamp(127.5 * samples + 128.0, 0, 255).permute(0, 2, 3, 1).to("cpu", dtype=torch.uint8).numpy()
 
         # Save samples to disk as individual .png files
@@ -214,6 +214,10 @@ if __name__ == "__main__":
     parser.add_argument("--image-size", type=int, choices=[256, 512], default=256)
     parser.add_argument("--num-classes", type=int, default=1000)
     parser.add_argument("--cfg-scale",  type=float, default=1.0)
+    parser.add_argument("--latent-scale", type=float, default=1.0,
+                        help="Extra scale baked into the training latents "
+                             "(data.latent_scale in the training config). Generated "
+                             "latents are divided by it before VAE decoding.")
     parser.add_argument("--num-sampling-steps", type=int, default=250)
     parser.add_argument("--global-seed", type=int, default=0)
     parser.add_argument("--tf32", action=argparse.BooleanOptionalAction, default=True,

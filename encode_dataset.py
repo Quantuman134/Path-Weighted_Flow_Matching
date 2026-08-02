@@ -161,7 +161,10 @@ def main():
             for j, i in enumerate(todo_indices):
                 out = out_paths[i]
                 os.makedirs(os.path.dirname(out), exist_ok=True)
-                tmp = out + ".tmp"
+                # Rank-unique temp name: DistributedSampler pads the index list
+                # so the last ranks re-encode a few of rank 0's images. A shared
+                # temp path would let two ranks interleave writes into one file.
+                tmp = f"{out}.tmp.{rank}"
                 torch.save({
                     "mean":      means[j],
                     "std":       stds[j],
