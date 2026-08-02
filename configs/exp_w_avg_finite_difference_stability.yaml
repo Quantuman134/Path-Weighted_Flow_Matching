@@ -14,10 +14,24 @@ experiment:
   experiments_base_dir: "./experiment"
   mode: "stability"                # 'stability' -> Experiment A
 
-model:
-  # SiT-XL/2 is the only pretrained model; both fields are fixed.
-  num_classes: 1000
+checkpoint:
+  # Checkpoint whose flow map F_{t->1} is probed. Point this at any run under
+  # results/<run>/checkpoints/<step>.pt to measure a different model.
+  # Default: the official SiT-XL/2 256x256 release (GitHub, 7M steps).
+  ckpt_path: "./results/SiT-XL-2-Linear-velocity-None-velocity-IS256-BS256-pretrained-github/checkpoints/7000000.pt"
+  use_ema: true                    # true -> ckpt["ema"], false -> ckpt["model"]
+
+# Optional overrides of the architecture saved in ckpt["args"] (same semantics
+# as exp_model_validation.py / exp_velocity_rmse.py: non-null values win).
+# The GitHub release checkpoint carries no "args", so its fields are spelled out
+# here. For a train.py checkpoint this can be left empty: model_overrides: {}
+model_overrides:
+  model: "SiT-XL/2"
   image_size: 256
+  num_classes: 1000
+  vae: "mse"                       # unused here (no decoding), required by the resolver
+  path_type: "Linear"
+  prediction: "velocity"
 
 solver:
   # Deterministic Euler solver. Trajectories use num_steps steps from t=0 to t=1.

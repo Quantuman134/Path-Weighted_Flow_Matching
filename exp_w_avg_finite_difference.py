@@ -1,10 +1,10 @@
 """
 exp_w_avg_finite_difference.py -- Randomized finite-difference estimation of
-                                  w_avg(t) for a pretrained SiT-XL/2 flow.
+                                  w_avg(t) for a trained SiT flow.
 
-Given the pretrained deterministic flow map  F_{t->1}(z)  produced by
-SiT-XL/2 + fixed-step Euler ODE, we estimate the average endpoint-error
-amplification
+Given the deterministic flow map  F_{t->1}(z)  produced by the checkpoint named
+in cfg["checkpoint"]["ckpt_path"] + fixed-step Euler ODE, we estimate the
+average endpoint-error amplification
 
     w_avg(t) = E_{z_t}[ (1/d) tr( Phi(1,t;z_t)^T Phi(1,t;z_t) ) ]
 
@@ -49,16 +49,33 @@ _SIT_DIR = os.path.dirname(os.path.abspath(__file__))
 if _SIT_DIR not in sys.path:
     sys.path.insert(0, _SIT_DIR)
 
-from models import SiT_models
-from download import find_model
+from exp_model_validation import (
+    resolve_model_args,
+    build_model,
+    load_checkpoint_weights,
+)
 
 
 # ------------------------------------------------------------------ constants
 
-LATENT_C = 4
-LATENT_H = 32
-LATENT_W = 32
-LATENT_D = LATENT_C * LATENT_H * LATENT_W          # 4096
+LATENT_C = 4                                       # VAE latent channels (fixed)
+LATENT_H = 32                                      # set by set_latent_dims()
+LATENT_W = 32                                      # set by set_latent_dims()
+LATENT_D = LATENT_C * LATENT_H * LATENT_W          # 4096 at image_size 256
+
+
+def set_latent_dims(image_size: int):
+    """Set the latent grid from the checkpoint's image size.
+
+    The VAE compresses 8x spatially, so a 256x256 model works on 4x32x32
+    latents (d = 4096) and a 512x512 model on 4x64x64 latents (d = 16384).
+    Called once in main() before any trajectory or probe is generated.
+    """
+    global LATENT_H, LATENT_W, LATENT_D
+    assert image_size % 8 == 0, "image_size must be divisible by 8 (VAE stride)."
+    LATENT_H = image_size // 8
+    LATENT_W = image_size // 8
+    LATENT_D = LATENT_C * LATENT_H * LATENT_W
 
 
 # ------------------------------------------------------------------ distrib.
@@ -99,26 +116,58 @@ def load_config(path: str) -> dict:
 
 # ------------------------------------------------------------------ model
 
-def build_pretrained_sit_xl_2(device: str, num_classes: int = 1000,
-                              image_size: int = 256):
-    """Instantiate SiT-XL/2 (learn_sigma=True) and load the pretrained weights.
+def build_model_from_config(cfg, device: str, verbose: bool = False):
+    """Load the checkpoint selected by cfg["checkpoint"]["ckpt_path"].
 
-    Returns model in eval mode on device, in fp32.
+    Follows exp_velocity_rmse.py / exp_model_validation.py: the architecture is
+    read from ckpt["args"] and cfg["model_overrides"] wins wherever it is set,
+    so any run under results/<run>/checkpoints/<step>.pt can be probed without
+    restating its architecture. Checkpoints without an "args" entry (e.g. the
+    wrapped GitHub release) need the fields supplied via model_overrides.
+
+    Returns:
+        (model, model_args): model in eval mode on device, fp32, grads disabled.
     """
-    latent_size = image_size // 8            # 32
-    model = SiT_models["SiT-XL/2"](
-        input_size=latent_size,
-        num_classes=num_classes,
-        learn_sigma=True,                     # matches the 256x256 pretrained ckpt
-    ).to(device).float()
+    ckpt_cfg = cfg["checkpoint"]
+    ckpt_path = ckpt_cfg["ckpt_path"]
+    use_ema = bool(ckpt_cfg.get("use_ema", True))
+    if not os.path.isfile(ckpt_path):
+        raise FileNotFoundError(
+            f"Checkpoint not found: {ckpt_path} "
+            f"(relative paths resolve against cwd {os.getcwd()})"
+        )
 
-    ckpt_path = f"SiT-XL-2-{image_size}x{image_size}.pt"
-    state_dict = find_model(ckpt_path)
-    model.load_state_dict(state_dict)
-    model.eval()
+    if verbose:
+        print(f"Loading checkpoint: {ckpt_path}  (use_ema={use_ema})")
+    ckpt = torch.load(ckpt_path, map_location="cpu", weights_only=False)
+    model_args = resolve_model_args(ckpt.get("args", None),
+                                    cfg.get("model_overrides") or {})
+    del ckpt
+
+    if verbose:
+        print(f"  model={model_args.model}  image_size={model_args.image_size}"
+              f"  num_classes={model_args.num_classes}"
+              f"  prediction={model_args.prediction}")
+
+    model = build_model(model_args, device).float()
+    load_checkpoint_weights(model, ckpt_path, use_ema=use_ema)
     for p in model.parameters():
         p.requires_grad_(False)
-    return model
+    return model, model_args
+
+
+def checkpoint_provenance(cfg, model_args) -> dict:
+    """Checkpoint identity recorded in the results JSON, so a saved run can be
+    traced back to the exact weights it was measured on."""
+    return {
+        "ckpt_path":   cfg["checkpoint"]["ckpt_path"],
+        "use_ema":     bool(cfg["checkpoint"].get("use_ema", True)),
+        "model":       model_args.model,
+        "image_size":  model_args.image_size,
+        "num_classes": model_args.num_classes,
+        "prediction":  model_args.prediction,
+        "path_type":   model_args.path_type,
+    }
 
 
 # ------------------------------------------------------------------ Euler ODE
@@ -418,7 +467,7 @@ def plot_wavg(t_grid, mean_w, ci_lo, ci_hi, A_sq, out_dir: str,
 
 # ------------------------------------------------------------------ mode: A
 
-def run_stability(cfg, model, cache_local, labels_local, device, rank,
+def run_stability(cfg, model, model_args, cache_local, labels_local, device, rank,
                   world_size, out_dir, seed, num_solver_steps,
                   probe_batch, K):
     """Experiment A: sweep eta at a few timesteps."""
@@ -530,6 +579,7 @@ def run_stability(cfg, model, cache_local, labels_local, device, rank,
         # Broadcast disagree from rank 0 to all ranks not needed; we only save it.
         result = {
             "mode": "stability",
+            "checkpoint": checkpoint_provenance(cfg, model_args),
             "num_solver_steps": num_solver_steps,
             "times": stab_times,
             "solver_indices": s_list,
@@ -569,7 +619,7 @@ def run_stability(cfg, model, cache_local, labels_local, device, rank,
 
 # ------------------------------------------------------------------ mode: B
 
-def run_wavg(cfg, model, cache_local, labels_local, device, rank,
+def run_wavg(cfg, model, model_args, cache_local, labels_local, device, rank,
              world_size, out_dir, seed, num_solver_steps, probe_batch, K):
     """Experiment B: 16-timestep w_avg(t) estimate at fixed eta_star."""
     wcfg = cfg["wavg"]
@@ -678,6 +728,7 @@ def run_wavg(cfg, model, cache_local, labels_local, device, rank,
 
         result = {
             "mode": "wavg",
+            "checkpoint": checkpoint_provenance(cfg, model_args),
             "num_solver_steps": num_solver_steps,
             "eta_star": eta_star,
             "solver_indices": s_grid,
@@ -761,12 +812,15 @@ def main():
         f"experiment.mode must be 'stability' or 'wavg', got {mode!r}"
 
     if rank == 0:
-        print(f"\nBuilding pretrained SiT-XL/2 (FP32) ...")
-    model = build_pretrained_sit_xl_2(
-        device=device,
-        num_classes=int(cfg["model"].get("num_classes", 1000)),
-        image_size=int(cfg["model"].get("image_size", 256)),
-    )
+        print(f"\nBuilding model (FP32) ...")
+    model, model_args = build_model_from_config(cfg, device, verbose=(rank == 0))
+
+    # The latent grid follows the checkpoint's image size (VAE stride 8); it must
+    # be set before any trajectory or probe is drawn.
+    set_latent_dims(int(model_args.image_size))
+    num_classes = int(model_args.num_classes)
+    if rank == 0:
+        print(f"  Latent: {LATENT_C}x{LATENT_H}x{LATENT_W} (d={LATENT_D})")
 
     # ── budget ───────────────────────────────────────────────────────────────
     num_solver_steps = int(cfg["solver"]["num_steps"])
@@ -787,7 +841,7 @@ def main():
     cache_local, labels_local = sample_base_trajectories(
         model=model,
         n_local=n_local,
-        num_classes=int(cfg["model"].get("num_classes", 1000)),
+        num_classes=num_classes,
         num_solver_steps=num_solver_steps,
         device=device,
         seed=seed,
@@ -812,11 +866,11 @@ def main():
 
     # ── dispatch ─────────────────────────────────────────────────────────────
     if mode == "stability":
-        run_stability(cfg, model, cache_local, labels_local, device, rank,
-                      world_size, exp_dir, seed, num_solver_steps,
+        run_stability(cfg, model, model_args, cache_local, labels_local, device,
+                      rank, world_size, exp_dir, seed, num_solver_steps,
                       probe_batch, K)
     elif mode == "wavg":
-        run_wavg(cfg, model, cache_local, labels_local, device, rank,
+        run_wavg(cfg, model, model_args, cache_local, labels_local, device, rank,
                  world_size, exp_dir, seed, num_solver_steps, probe_batch, K)
 
     if rank == 0:
