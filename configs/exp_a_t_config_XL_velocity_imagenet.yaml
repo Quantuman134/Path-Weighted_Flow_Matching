@@ -1,0 +1,56 @@
+# Estimate a(t) for the frozen SiT-XL/2 ImageNet velocity teacher.
+
+experiment:
+  name: a_t_SiT_XL_velocity_imagenet
+  output_dir: ./experiment
+
+checkpoint:
+  # The resolver also accepts train.py's unknown numeric run prefix, e.g.
+  # results/053-SiT-XL-2-.../checkpoints/0300000.pt.
+  ckpt_path: ./results/SiT-XL-2-Linear-velocity-None-velocity-IS256-BS1024-imagenet-pretrained/checkpoints/0300000.pt
+  use_ema: true
+
+# Values explicitly mirror the XL ImageNet config. They also make the script
+# usable with an older checkpoint whose saved args are incomplete.
+model_overrides:
+  model: SiT-XL/2
+  image_size: 256
+  num_classes: 1000
+  vae: ema
+  path_type: Linear
+  prediction: velocity
+  # Packed data already has any extra scale baked in. This value is used only
+  # if the script falls back to raw images + VAE encoding.
+  latent_scale: 1.0
+
+data:
+  # Same cloud paths and source priority as the ImageNet training config.
+  packed_latent_data_path: /scratch/project/prj-02-visual-ai/hkzhang/ILSVRC/latents_packed/train
+  data_path: /scratch/project/prj-02-visual-ai/hkzhang/ILSVRC/Data/CLS-LOC/train
+  latent_scale: 1.0
+  orientation: 0
+  loading_batch_size: 64
+  num_workers: 4
+
+eval:
+  num_samples: 256
+  batch_size: 4                 # teacher sees a paired batch of size 8
+  seed: 42
+  num_midpoints: 16
+  include_t1: true
+  eta: 3.0e-3
+  base_steps: 32
+  compute_dtype: bfloat16       # solver states still accumulate in float32
+
+# Small preflight sweeps. Disable after confirming stable eta/solver settings,
+# or increase num_samples for a stricter convergence check.
+stability:
+  enabled: true
+  num_samples: 32
+  batch_size: 4
+  time_steps: [0.09375, 0.46875, 0.90625]
+  eta_values: [1.0e-3, 3.0e-3, 1.0e-2]
+  base_steps_values: [32, 64]
+  solver_relative_tolerance: 0.05
+
+device: cuda:0
