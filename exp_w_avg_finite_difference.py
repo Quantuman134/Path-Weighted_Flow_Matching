@@ -1,10 +1,14 @@
 """
 exp_w_avg_finite_difference.py -- Randomized finite-difference estimation of
-                                  w_avg(t) for a trained SiT flow.
+                                  w_avg(t) for a SiT flow.
 
-Given the deterministic flow map  F_{t->1}(z)  produced by the checkpoint named
-in cfg["checkpoint"]["ckpt_path"] + fixed-step Euler ODE, we estimate the
-average endpoint-error amplification
+The SiT-XL/2 checkpoint is controlled by the checkpoint.path field of the
+config YAML: leave it empty to auto-download the pretrained SiT-XL/2 256x256
+weights (via download.find_model, matching sample_ddp.py), or point it at a
+local .pt file (train.py's 'ema'/'model' format or a flat state_dict).
+
+Given the deterministic flow map  F_{t->1}(z)  produced by SiT-XL/2 +
+fixed-step Euler ODE, we estimate the average endpoint-error amplification
 
     w_avg(t) = E_{z_t}[ (1/d) tr( Phi(1,t;z_t)^T Phi(1,t;z_t) ) ]
 
@@ -58,24 +62,16 @@ from exp_model_validation import (
 
 # ------------------------------------------------------------------ constants
 
-LATENT_C = 4                                       # VAE latent channels (fixed)
-LATENT_H = 32                                      # set by set_latent_dims()
-LATENT_W = 32                                      # set by set_latent_dims()
-LATENT_D = LATENT_C * LATENT_H * LATENT_W          # 4096 at image_size 256
+LATENT_C = 4
+LATENT_H = 32
+LATENT_W = 32
+LATENT_D = LATENT_C * LATENT_H * LATENT_W          # 4096
 
 
-def set_latent_dims(image_size: int):
-    """Set the latent grid from the checkpoint's image size.
-
-    The VAE compresses 8x spatially, so a 256x256 model works on 4x32x32
-    latents (d = 4096) and a 512x512 model on 4x64x64 latents (d = 16384).
-    Called once in main() before any trajectory or probe is generated.
-    """
-    global LATENT_H, LATENT_W, LATENT_D
-    assert image_size % 8 == 0, "image_size must be divisible by 8 (VAE stride)."
-    LATENT_H = image_size // 8
-    LATENT_W = image_size // 8
-    LATENT_D = LATENT_C * LATENT_H * LATENT_W
+def image_size_to_latent_hw(image_size: int) -> tuple:
+    """SD-VAE downsamples 8x -> (H, W) = (image_size / 8, image_size / 8)."""
+    assert image_size % 8 == 0, f"image_size must be divisible by 8, got {image_size}"
+    return (image_size // 8, image_size // 8)
 
 
 # ------------------------------------------------------------------ distrib.
@@ -116,58 +112,129 @@ def load_config(path: str) -> dict:
 
 # ------------------------------------------------------------------ model
 
-def build_model_from_config(cfg, device: str, verbose: bool = False):
-    """Load the checkpoint selected by cfg["checkpoint"]["ckpt_path"].
+def _load_state_dict_from_path(ckpt_path: str, use_ema: bool):
+    """Load a SiT state dict from a local checkpoint file.
 
-    Follows exp_velocity_rmse.py / exp_model_validation.py: the architecture is
-    read from ckpt["args"] and cfg["model_overrides"] wins wherever it is set,
-    so any run under results/<run>/checkpoints/<step>.pt can be probed without
-    restating its architecture. Checkpoints without an "args" entry (e.g. the
-    wrapped GitHub release) need the fields supplied via model_overrides.
+    Supports two on-disk formats:
+      - train.py checkpoints: dict with 'model'/'ema'/'args' keys; use_ema
+        selects which weight set to return, and ckpt['args'] (if present) is
+        also returned so the caller can recover architecture fields.
+      - flat state_dict files (e.g. the auto-downloaded pretrained ckpt saved
+        via `torch.save(state_dict, ...)`): the dict itself is the state.
 
-    Returns:
-        (model, model_args): model in eval mode on device, fp32, grads disabled.
+    Returns (state_dict, ckpt_args_or_None).
     """
-    ckpt_cfg = cfg["checkpoint"]
-    ckpt_path = ckpt_cfg["ckpt_path"]
-    use_ema = bool(ckpt_cfg.get("use_ema", True))
     if not os.path.isfile(ckpt_path):
-        raise FileNotFoundError(
-            f"Checkpoint not found: {ckpt_path} "
-            f"(relative paths resolve against cwd {os.getcwd()})"
+        raise FileNotFoundError(f"Checkpoint file not found: {ckpt_path}")
+    payload = torch.load(ckpt_path, map_location="cpu", weights_only=False)
+
+    if isinstance(payload, dict) and ("ema" in payload or "model" in payload):
+        key = "ema" if use_ema else "model"
+        if key not in payload:
+            available = [k for k in ("ema", "model") if k in payload]
+            raise KeyError(
+                f"Key '{key}' not found in checkpoint {ckpt_path}; "
+                f"available: {available}. Set use_ema accordingly."
+            )
+        return payload[key], payload.get("args", None)
+
+    # Flat state_dict.
+    return payload, None
+
+
+def build_and_load_model(ckpt_cfg: dict, model_cfg: dict, device: str,
+                        rank: int = 0):
+    """Build a SiT model and load weights, selectable via config.
+
+    ckpt_cfg fields:
+        path      : local checkpoint file. If provided (non-empty), the file
+                    is loaded via torch.load; supports both train.py
+                    checkpoints ('ema'/'model'/'args' keys) and flat
+                    state_dicts. If omitted / null / empty, the pretrained
+                    SiT-XL/2 256x256 checkpoint is auto-downloaded via
+                    download.find_model (identical to sample_ddp.py --ckpt None).
+        use_ema   : bool; only meaningful when the checkpoint has both
+                    'ema' and 'model' keys (train.py format). Default True.
+        model_arch: optional str; SiT model tag (e.g. 'SiT-XL/2'). If
+                    omitted, it is inferred from ckpt['args'] when available,
+                    else defaults to 'SiT-XL/2'.
+        learn_sigma: optional bool. Defaults to True (matches both the
+                     pretrained SiT-XL/2 256x256 ckpt and train.py's default).
+
+    model_cfg fields (fallback / override):
+        num_classes, image_size.
+
+    Returns (model, resolved_args_dict) where resolved_args_dict records the
+    architecture actually used (for logging / config.yaml round-trip).
+    """
+    ckpt_path = ckpt_cfg.get("path") or None       # treat "" and None alike
+    use_ema = bool(ckpt_cfg.get("use_ema", True))
+
+    # ── load the raw state dict (and any inline args) ────────────────────────
+    if ckpt_path is None:
+        # Auto-download the pretrained SiT-XL/2 256x256 checkpoint.
+        image_size_default = 256                 # only 256x256 is downloadable
+        image_size_req = int(model_cfg.get("image_size") or image_size_default)
+        if image_size_req != 256:
+            raise ValueError(
+                f"Auto-download only supports image_size=256, got {image_size_req}. "
+                f"Set checkpoint.path to a local .pt file instead."
+            )
+        if rank == 0:
+            print(f"  No checkpoint.path given -> auto-downloading pretrained SiT-XL/2 256x256")
+        state_dict = find_model("SiT-XL-2-256x256.pt")
+        ckpt_args = None
+        default_model_tag = "SiT-XL/2"
+        default_learn_sigma = True               # the 256 pretrained ckpt has learn_sigma
+    else:
+        if rank == 0:
+            print(f"  Loading checkpoint file: {ckpt_path}  (use_ema={use_ema})")
+        state_dict, ckpt_args = _load_state_dict_from_path(ckpt_path, use_ema)
+        default_model_tag = getattr(ckpt_args, "model", "SiT-XL/2") \
+            if ckpt_args is not None else "SiT-XL/2"
+        default_learn_sigma = True               # train.py uses the default (True)
+
+    # ── resolve architecture (config overrides ckpt args) ───────────────────
+    def _resolve(field, fallback):
+        cfg_val = ckpt_cfg.get(field, None)
+        if cfg_val is not None:
+            return cfg_val
+        if ckpt_args is not None and getattr(ckpt_args, field, None) is not None:
+            return getattr(ckpt_args, field)
+        return fallback
+
+    model_tag   = ckpt_cfg.get("model_arch")  or default_model_tag
+    learn_sigma = ckpt_cfg.get("learn_sigma") if ckpt_cfg.get("learn_sigma") is not None \
+                    else default_learn_sigma
+    num_classes = int(_resolve("num_classes", model_cfg.get("num_classes", 1000)))
+    image_size  = int(_resolve("image_size",  model_cfg.get("image_size", 256)))
+
+    if model_tag not in SiT_models:
+        raise ValueError(
+            f"Unknown model_arch '{model_tag}'. Available: {list(SiT_models.keys())}"
         )
 
-    if verbose:
-        print(f"Loading checkpoint: {ckpt_path}  (use_ema={use_ema})")
-    ckpt = torch.load(ckpt_path, map_location="cpu", weights_only=False)
-    model_args = resolve_model_args(ckpt.get("args", None),
-                                    cfg.get("model_overrides") or {})
-    del ckpt
-
-    if verbose:
-        print(f"  model={model_args.model}  image_size={model_args.image_size}"
-              f"  num_classes={model_args.num_classes}"
-              f"  prediction={model_args.prediction}")
-
-    model = build_model(model_args, device).float()
-    load_checkpoint_weights(model, ckpt_path, use_ema=use_ema)
+    # ── instantiate + load ───────────────────────────────────────────────────
+    latent_size = image_size // 8
+    model = SiT_models[model_tag](
+        input_size=latent_size,
+        num_classes=num_classes,
+        learn_sigma=bool(learn_sigma),
+    ).to(device).float()
+    model.load_state_dict(state_dict)
+    model.eval()
     for p in model.parameters():
         p.requires_grad_(False)
-    return model, model_args
 
-
-def checkpoint_provenance(cfg, model_args) -> dict:
-    """Checkpoint identity recorded in the results JSON, so a saved run can be
-    traced back to the exact weights it was measured on."""
-    return {
-        "ckpt_path":   cfg["checkpoint"]["ckpt_path"],
-        "use_ema":     bool(cfg["checkpoint"].get("use_ema", True)),
-        "model":       model_args.model,
-        "image_size":  model_args.image_size,
-        "num_classes": model_args.num_classes,
-        "prediction":  model_args.prediction,
-        "path_type":   model_args.path_type,
+    resolved = {
+        "path":        ckpt_path,
+        "use_ema":     use_ema,
+        "model_arch":  model_tag,
+        "learn_sigma": bool(learn_sigma),
+        "num_classes": num_classes,
+        "image_size":  image_size,
     }
+    return model, resolved
 
 
 # ------------------------------------------------------------------ Euler ODE
@@ -811,16 +878,35 @@ def main():
     assert mode in ("stability", "wavg"), \
         f"experiment.mode must be 'stability' or 'wavg', got {mode!r}"
 
+    ckpt_cfg = cfg.get("checkpoint") or {}
     if rank == 0:
-        print(f"\nBuilding model (FP32) ...")
-    model, model_args = build_model_from_config(cfg, device, verbose=(rank == 0))
+        _path = ckpt_cfg.get("path") or None
+        _origin = _path if _path else "pretrained SiT-XL/2 (auto-download)"
+        print(f"\nBuilding SiT model (FP32) ... checkpoint = {_origin}")
+    model, model_resolved = build_and_load_model(
+        ckpt_cfg=ckpt_cfg,
+        model_cfg=cfg.get("model", {}),
+        device=device,
+        rank=rank,
+    )
+    if rank == 0:
+        print(f"  model_arch = {model_resolved['model_arch']}"
+              f"   image_size = {model_resolved['image_size']}"
+              f"   num_classes = {model_resolved['num_classes']}"
+              f"   learn_sigma = {model_resolved['learn_sigma']}"
+              f"   use_ema = {model_resolved['use_ema']}")
 
-    # The latent grid follows the checkpoint's image size (VAE stride 8); it must
-    # be set before any trajectory or probe is drawn.
-    set_latent_dims(int(model_args.image_size))
-    num_classes = int(model_args.num_classes)
-    if rank == 0:
-        print(f"  Latent: {LATENT_C}x{LATENT_H}x{LATENT_W} (d={LATENT_D})")
+    # Latent shape (LATENT_C, LATENT_H, LATENT_W) is hardcoded to (4, 32, 32),
+    # i.e. image_size = 256. Fail early with a clear message if the checkpoint
+    # implies a different resolution.
+    expected_latent = image_size_to_latent_hw(model_resolved["image_size"])
+    if expected_latent != (LATENT_H, LATENT_W):
+        raise ValueError(
+            f"This script's latent shape is hardcoded to (C={LATENT_C}, "
+            f"H={LATENT_H}, W={LATENT_W}) (image_size=256). The checkpoint "
+            f"reports image_size={model_resolved['image_size']} which yields "
+            f"latent {expected_latent}. Update LATENT_H/W/D or use a 256x256 model."
+        )
 
     # ── budget ───────────────────────────────────────────────────────────────
     num_solver_steps = int(cfg["solver"]["num_steps"])
@@ -841,7 +927,7 @@ def main():
     cache_local, labels_local = sample_base_trajectories(
         model=model,
         n_local=n_local,
-        num_classes=num_classes,
+        num_classes=int(model_resolved["num_classes"]),
         num_solver_steps=num_solver_steps,
         device=device,
         seed=seed,

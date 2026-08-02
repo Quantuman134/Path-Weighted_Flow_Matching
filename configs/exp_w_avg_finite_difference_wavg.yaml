@@ -14,20 +14,27 @@ experiment:
   experiments_base_dir: "./experiment"
   mode: "wavg"                     # 'wavg' -> Experiment B
 
+# ── checkpoint selection ─────────────────────────────────────────────────
+# path : local .pt file to load.
+#          - If empty / null / omitted, the pretrained SiT-XL/2 256x256
+#            checkpoint is auto-downloaded via download.find_model
+#            (identical to sample_ddp.py's --ckpt None path).
+#          - Otherwise, torch.load is called; accepts both train.py
+#            checkpoints ('ema'/'model'/'args' keys) and flat state_dicts.
+# use_ema: only meaningful when the checkpoint has both 'ema' and 'model'
+#          keys (train.py format). Selects which weight set to load.
+# The rest are optional overrides; leave them commented to use the
+# checkpoint's own 'args' (train.py format) or, failing that, the model:
+# block below.
 checkpoint:
-  # Checkpoint whose flow map F_{t->1} is probed. Keep this identical to the one
-  # used for the Experiment A eta sweep, otherwise eta_star does not transfer.
-  # Default: the official SiT-XL/2 256x256 release (GitHub, 7M steps).
-  ckpt_path: "./results/SiT-XL-2-Linear-velocity-None-velocity-IS256-BS256-pretrained-github/checkpoints/7000000.pt"
-  use_ema: true                    # true -> ckpt["ema"], false -> ckpt["model"]
+  path: ""                         # e.g. "./results/XXX-<run-name>/checkpoints/0100000.pt"
+  use_ema: true
+  # model_arch: "SiT-XL/2"
+  # learn_sigma: true
+  # num_classes: 1000
+  # image_size: 256
 
-# Optional overrides of the architecture saved in ckpt["args"] (same semantics
-# as exp_model_validation.py / exp_velocity_rmse.py: non-null values win).
-# The GitHub release checkpoint carries no "args", so its fields are spelled out
-# here. For a train.py checkpoint this can be left empty: model_overrides: {}
-model_overrides:
-  model: "SiT-XL/2"
-  image_size: 256
+model:
   num_classes: 1000
   vae: "mse"                       # unused here (no decoding), required by the resolver
   path_type: "Linear"
