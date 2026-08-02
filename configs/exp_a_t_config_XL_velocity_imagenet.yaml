@@ -33,24 +33,24 @@ data:
   num_workers: 4
 
 eval:
-  num_samples: 256
-  batch_size: 4                 # teacher sees a paired batch of size 8
+  num_samples: 512
+  batch_size: 64                # teacher sees a paired batch of size 128
   seed: 42                       # fixes z0, posterior sampling, and Gaussian q
   num_midpoints: 16
   include_t1: true
   eta: 3.0e-3
-  base_steps: 32
-  compute_dtype: bfloat16       # solver states still accumulate in float32
+  base_steps: 64
+  compute_dtype: float32        # teacher and solver states both use float32
 
 # Small preflight sweeps. Disable after confirming stable eta/solver settings,
 # or increase num_samples for a stricter convergence check.
 stability:
   enabled: true
-  num_samples: 32
-  batch_size: 4
+  num_samples: 64
+  batch_size: 64                # one paired teacher batch of size 128
   time_steps: [0.09375, 0.46875, 0.90625]
-  eta_values: [1.0e-3, 3.0e-3, 1.0e-2]
-  base_steps_values: [32, 64]
+  eta_values: [3.0e-4, 1.0e-3, 3.0e-3, 1.0e-2]
+  base_steps_values: [64, 128]
   solver_relative_tolerance: 0.05
 
 device: cuda:0
