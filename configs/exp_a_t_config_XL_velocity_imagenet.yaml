@@ -35,7 +35,7 @@ data:
 eval:
   num_samples: 256
   batch_size: 4                 # teacher sees a paired batch of size 8
-  seed: 42
+  seed: 42                       # fixes z0, posterior sampling, and Gaussian q
   num_midpoints: 16
   include_t1: true
   eta: 3.0e-3

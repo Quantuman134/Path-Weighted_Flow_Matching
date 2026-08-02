@@ -4,14 +4,15 @@ For a linear interpolant ``z_t = (1 - t) z_0 + t z_1``, this script estimates
 
     a(t) = E_{z_t,q}[||Phi(1, t; z_t) q||_2^2],
 
-where ``q`` is a unit-norm Rademacher probe and ``Phi`` is the derivative of
+where ``q`` is a normalized Gaussian probe and ``Phi`` is the derivative of
 the teacher ODE flow map with respect to its input state.  No Jacobian, JVP, or
 backward pass is used.  Instead, ``Phi q`` is estimated with a central finite
 difference of two ordinary, frozen-teacher Heun rollouts.
 
 The same selected data latents, Gaussian source latents, labels, and probes are
 reused at every time point.  The output directory contains per-sample targets
-(``a_t_targets.npz``), aggregate statistics (JSON and CSV), and a curve plot.
+(``a_t_targets.npz``), aggregate statistics (JSON and CSV), wall-clock timing
+(``experiment_timing.json``), and a curve plot.
 
 Usage:
     python exp_a_t.py --config configs/exp_a_t_config_XL_velocity_imagenet.yaml
@@ -25,7 +26,9 @@ import math
 import os
 import shutil
 from contextlib import nullcontext
+from datetime import datetime, timezone
 from glob import glob
+from time import perf_counter
 from types import SimpleNamespace
 from typing import Dict, List, Optional, Sequence, Tuple
 
@@ -345,12 +348,33 @@ def collect_fixed_samples(
 def make_fixed_source_and_probes(
     z1: torch.Tensor, seed: int
 ) -> Tuple[torch.Tensor, torch.Tensor]:
-    generator = torch.Generator(device="cpu").manual_seed(seed + 2)
-    z0 = torch.randn(z1.shape, generator=generator, dtype=torch.float32)
-    signs = torch.randint(0, 2, z1.shape, generator=generator, dtype=torch.int8)
-    dimension = int(np.prod(z1.shape[1:]))
-    q = signs.to(torch.float32).mul_(2).sub_(1).div_(math.sqrt(dimension))
+    source_generator = torch.Generator(device="cpu").manual_seed(seed + 2)
+    probe_generator = torch.Generator(device="cpu").manual_seed(seed + 3)
+    z0 = torch.randn(z1.shape, generator=source_generator, dtype=torch.float32)
+    q = torch.randn(z1.shape, generator=probe_generator, dtype=torch.float32)
+    q_norm = q.flatten(1).norm(dim=1)
+    if torch.any(q_norm == 0):
+        raise RuntimeError("Sampled a zero-norm Gaussian probe")
+    q_norm_view = q_norm.reshape(q.shape[0], *([1] * (q.ndim - 1)))
+    # Normalized iid Gaussians are uniform on the unit sphere, so E[qq^T] = I/d.
+    q.div_(q_norm_view)
     return z0, q
+
+
+def synchronize_device(device: torch.device) -> None:
+    """Synchronize CUDA before reading a wall-clock timer."""
+    if device.type == "cuda":
+        torch.cuda.synchronize(device)
+
+
+def format_duration(seconds: float) -> str:
+    if seconds < 60.0:
+        return f"{seconds:.2f}s"
+    minutes, remaining_seconds = divmod(seconds, 60.0)
+    if minutes < 60.0:
+        return f"{int(minutes)}m {remaining_seconds:.1f}s"
+    hours, remaining_minutes = divmod(minutes, 60.0)
+    return f"{int(hours)}h {int(remaining_minutes)}m {remaining_seconds:.1f}s"
 
 
 def parse_compute_dtype(name: str) -> Optional[torch.dtype]:
@@ -663,6 +687,9 @@ def save_results(
     standard_errors = np.asarray(
         [row["standard_error"] for row in summaries], dtype=np.float64
     )
+    timepoint_elapsed_seconds = np.asarray(
+        [row["elapsed_seconds"] for row in summaries], dtype=np.float64
+    )
     np.savez_compressed(
         os.path.join(output_dir, "a_t_targets.npz"),
         times=np.asarray(times, dtype=np.float64),
@@ -670,6 +697,7 @@ def save_results(
         means=means,
         stds=stds,
         standard_errors=standard_errors,
+        timepoint_elapsed_seconds=timepoint_elapsed_seconds,
         sample_indices=sample_indices,
     )
 
@@ -710,6 +738,8 @@ def save_results(
 
 
 def main() -> None:
+    experiment_started_at = datetime.now(timezone.utc)
+    experiment_start = perf_counter()
     parser = argparse.ArgumentParser(description="Estimate a(t) by central finite differences")
     parser.add_argument("--config", required=True, help="Path to experiment YAML")
     parser.add_argument("--device", default=None, help="Optional device override")
@@ -782,7 +812,11 @@ def main() -> None:
         f"compute_dtype={compute_dtype_name}, pair_batch={2 * batch_size}"
     )
 
+    synchronize_device(device)
+    initialization_seconds = perf_counter() - experiment_start
+
     # Run the cheaper numerical checks before the formal N-sample sweep.
+    stability_start = perf_counter()
     stability = run_stability_checks(
         teacher,
         z0,
@@ -794,21 +828,35 @@ def main() -> None:
         compute_dtype,
         device,
     )
+    synchronize_device(device)
+    stability_seconds = perf_counter() - stability_start
+    stability["elapsed_seconds"] = stability_seconds
     print_stability_summary(stability)
+    print(f"Stability checks elapsed: {format_duration(stability_seconds)}")
 
     target_rows, summaries = [], []
+    formal_start = perf_counter()
     for index, t_value in enumerate(times, start=1):
+        synchronize_device(device)
+        timepoint_start = perf_counter()
         targets = evaluate_at_time(
             teacher, z0, z1, q, labels, t_value, batch_size, eta,
             base_steps, compute_dtype, device,
         )
+        synchronize_device(device)
+        timepoint_seconds = perf_counter() - timepoint_start
         summary = summarize_targets(targets)
+        summary["elapsed_seconds"] = timepoint_seconds
         target_rows.append(targets.numpy())
         summaries.append(summary)
         print(
             f"[{index:02d}/{len(times):02d}] t={t_value:.5f}  "
-            f"a_hat={summary['mean']:.8g}  se={summary['standard_error']:.3g}"
+            f"a_hat={summary['mean']:.8g}  se={summary['standard_error']:.3g}  "
+            f"elapsed={format_duration(timepoint_seconds)}"
         )
+
+    synchronize_device(device)
+    formal_sweep_seconds = perf_counter() - formal_start
 
     target_matrix = np.stack(target_rows, axis=0)
     if not np.isfinite(target_matrix).all():
@@ -828,10 +876,12 @@ def main() -> None:
         "solver": "heun",
         "compute_dtype": compute_dtype_name,
         "solver_state_dtype": "float32",
-        "probe": "unit_norm_rademacher",
+        "probe": "unit_norm_gaussian",
         "seed": seed,
         "a_t1_identity_error": None if t1_mean is None else abs(t1_mean - 1.0),
+        "timing_file": "experiment_timing.json",
     }
+    results_save_start = perf_counter()
     save_results(
         output_dir,
         times,
@@ -841,7 +891,31 @@ def main() -> None:
         metadata,
         stability,
     )
+    results_save_seconds = perf_counter() - results_save_start
+    experiment_finished_at = datetime.now(timezone.utc)
+    total_wall_seconds = perf_counter() - experiment_start
+    timing = {
+        "started_at_utc": experiment_started_at.isoformat(),
+        "finished_at_utc": experiment_finished_at.isoformat(),
+        "initialization_seconds": initialization_seconds,
+        "stability_seconds": stability_seconds,
+        "formal_sweep_seconds": formal_sweep_seconds,
+        "formal_timepoint_seconds": {
+            f"{t_value:.8g}": summary["elapsed_seconds"]
+            for t_value, summary in zip(times, summaries)
+        },
+        "results_save_seconds": results_save_seconds,
+        "total_wall_seconds": total_wall_seconds,
+        "allocated_gpu_count": 1,
+        "single_gpu_wall_hours": total_wall_seconds / 3600.0,
+    }
+    with open(os.path.join(output_dir, "experiment_timing.json"), "w") as f:
+        json.dump(timing, f, indent=2)
     print(f"Saved a(t) results to {output_dir}")
+    print(
+        f"Total experiment elapsed: {format_duration(total_wall_seconds)} "
+        f"({total_wall_seconds / 3600.0:.4f} single-GPU hours)"
+    )
 
 
 if __name__ == "__main__":
