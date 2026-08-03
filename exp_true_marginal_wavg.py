@@ -582,14 +582,17 @@ def autograd_vjp_validation(Y: torch.Tensor, t: float,
         JT_analytic = apply_JT_batched(A, Y, t, alpha, mu)              # (K, N, D)
 
     # Autograd path: for each trajectory, compute grad_z (a . v(z, t)).
+    # main() calls torch.set_grad_enabled(False) globally, so we must
+    # re-enable grad locally for this validation subrun.
     JT_autograd = torch.zeros_like(JT_analytic)
-    for n in range(N_val):
-        for k in range(K_val):
-            z = Z[n].detach().clone().requires_grad_(True)
-            v = _velocity_diff(z, Y, t)
-            scalar = (A[k, n] * v).sum()
-            g = torch.autograd.grad(scalar, z, create_graph=False)[0]
-            JT_autograd[k, n] = g
+    with torch.enable_grad():
+        for n in range(N_val):
+            for k in range(K_val):
+                z = Z[n].detach().clone().requires_grad_(True)
+                v = _velocity_diff(z, Y, t)
+                scalar = (A[k, n] * v).sum()
+                g = torch.autograd.grad(scalar, z, create_graph=False)[0]
+                JT_autograd[k, n] = g.detach()
 
     diff = (JT_analytic - JT_autograd).to(torch.float64)
     ref = JT_autograd.to(torch.float64)
