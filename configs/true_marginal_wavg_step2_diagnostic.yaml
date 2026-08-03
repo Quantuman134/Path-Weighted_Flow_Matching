@@ -1,0 +1,93 @@
+# ============================================================
+# Step 2 of the revised execution sequence
+# (tmp/true_marginal_wavg_required_revisions.html §5.2):
+#
+#   "One ImageNet-latent class, float64 diagnostic.
+#    Run N=8, K=16, T=0.95, and S in {128, 256, 512}."
+#
+# Purpose:
+#   - single class, single GPU, fp64
+#   - verify solver convergence (S=256 vs S=512 max rel err < 10%)
+#   - verify analytic J_v^T against autograd VJP (rel err < 1e-8 in fp64)
+#   - verify FD-trace vs backward-trace agreement < 5%
+#   - verify marginal-moment identities on the integrated flow
+#   - no NaN/Inf; softmax row-sum deviation < 1e-5
+#
+# Expected wall-time: ~2-5 min on a single GPU.
+# ============================================================
+
+experiment:
+  name: "tm_step2_fp64_diagnostic"
+  seed: 2026
+
+output_dir: "./experiment/tm_step2_fp64_diagnostic"
+experiments_base_dir: "./experiment"
+
+# ── data ─────────────────────────────────────────────────────────────────
+data:
+  latent_root: "/scratch/project/prj-02-visual-ai/hkzhang/ILSVRC/latents_packed/train"
+  data_space: "latent"
+  latent_shape: [4, 32, 32]
+  latent_dimension: 4096
+  latent_mode: "fixed_posterior_sample"
+  latent_scale: 0.18215
+  num_available_classes: 1000
+  num_test_classes: 1                      # ← single class
+  class_selection: "uniform_without_replacement"
+  use_all_targets_in_class: true
+
+# ── flow / solver ────────────────────────────────────────────────────────
+# T=0.95 per revision doc §5.2 (Step 2).
+# Main-sweep uses S=256; validation subrun sweeps S in {128, 256, 512}.
+flow:
+  target_distribution: "empirical_discrete"
+  solver: "euler"
+  terminal_time: 0.95
+  solver_steps: 256
+  report_indices: [0, 17, 34, 51, 68, 85, 102, 119, 137,
+                   154, 171, 188, 205, 222, 239, 256]
+
+# ── estimator ────────────────────────────────────────────────────────────
+# fp64 diagnostic mode with the small (N, K) budget from doc §5.2.
+estimator:
+  samples_per_class: 8                     # N = 8
+  probes_per_sample: 16                    # K = 16
+  probe_type: "rademacher"
+  precision: "fp64"                        # ← float64 reference
+  bootstrap_replicates: 1000
+
+# ── distributed (single GPU) ─────────────────────────────────────────────
+distributed:
+  world_size: 1
+  class_assignment: "round_robin"
+
+# ── logging ──────────────────────────────────────────────────────────────
+logging:
+  echo_stdout: true
+  progress_interval_steps: 16
+  jsonl: true
+  checkpoint_each_class: true
+  profile_latency: true
+
+# ── validation subruns (rank 0, after the main sweep) ────────────────────
+validation:
+  enabled: true
+
+  # Solver-convergence sweep per doc §5.2.
+  solver_steps: [128, 256, 512]
+  num_classes: 1                           # single available class
+  val_N: 8
+  val_K: 16
+
+  # Finite-difference trace-averaged agreement.
+  finite_difference_delta: [1.0e-4, 5.0e-4, 1.0e-3]
+
+  # Autograd local VJP validation of J_v^T; fp64 to hit the 1e-8 bar.
+  autograd_vjp: true
+  autograd_vjp_dtype: "fp64"
+
+  # Marginal-moment identities on the integrated flow.
+  marginal_moments: true
+
+# Single-GPU fallback (used because we do NOT launch via torchrun).
+device: "cuda:0"
