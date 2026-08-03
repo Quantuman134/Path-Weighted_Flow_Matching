@@ -1,0 +1,81 @@
+# ============================================================
+# Step 3 of the revised execution sequence
+# (tmp/true_marginal_wavg_required_revisions.html §5.3):
+#
+#   "8-class convergence run. T in {0.95, 0.98, 0.99}, S in {128, 256, 512,
+#    1024}. Verify at each T that the max relative error between the S=256
+#    and S=512 curves is below 10 percent."
+#
+# Purpose:
+#   - 8 ImageNet classes, sharded across 8 GPUs (1 class per rank)
+#   - fp32 with the full N=64, K=64 estimator budget
+#   - validation subrun on rank 0 sweeps S in {128, 256, 512, 1024}
+#
+# Gate to Step 4:
+#   solver_convergence.csv row (S=256, S_ref=512):
+#     mean_rel_err < 0.05  AND  max_rel_err < 0.10
+#
+# Expected wall-time: ~20-40 min on 8 x H200.
+#
+# To sweep T, either edit flow.terminal_time below and rerun with a new
+# --output path, or copy this file to a T-specific variant.
+# ============================================================
+
+experiment:
+  name: "tm_step3_8class_convergence"
+  seed: 2026
+
+output_dir: "./experiment/tm_step3_8class_convergence"
+experiments_base_dir: "./experiment"
+
+data:
+  latent_root: "/scratch/project/prj-02-visual-ai/hkzhang/ILSVRC/latents_packed/train"
+  data_space: "latent"
+  latent_shape: [4, 32, 32]
+  latent_dimension: 4096
+  latent_mode: "fixed_posterior_sample"
+  latent_scale: 0.18215
+  num_available_classes: 1000
+  num_test_classes: 8                      # ← 8 classes (1 per GPU)
+  class_selection: "uniform_without_replacement"
+  use_all_targets_in_class: true
+
+flow:
+  target_distribution: "empirical_discrete"
+  solver: "euler"
+  terminal_time: 0.99                      # ← primary T; sweep manually
+  solver_steps: 256
+  report_indices: [0, 17, 34, 51, 68, 85, 102, 119, 137,
+                   154, 171, 188, 205, 222, 239, 256]
+
+estimator:
+  samples_per_class: 64                    # N = 64 (full budget)
+  probes_per_sample: 64                    # K = 64 (full budget)
+  probe_type: "rademacher"
+  precision: "fp32"                        # fp32 for speed at production budget
+  bootstrap_replicates: 10000
+
+distributed:
+  world_size: 8
+  class_assignment: "round_robin"
+
+logging:
+  echo_stdout: true
+  progress_interval_steps: 8
+  jsonl: true
+  checkpoint_each_class: true
+  profile_latency: true
+
+validation:
+  enabled: true
+  # Full S sweep per doc §5.3.
+  solver_steps: [128, 256, 512, 1024]
+  num_classes: 4                           # first 4 selected classes only
+  val_N: 8
+  val_K: 16
+  finite_difference_delta: [1.0e-4, 5.0e-4, 1.0e-3, 5.0e-3]
+  autograd_vjp: true
+  autograd_vjp_dtype: "fp64"
+  marginal_moments: true
+
+device: "cuda:0"
