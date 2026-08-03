@@ -69,10 +69,15 @@ logging:
 validation:
   enabled: true
   # Full S sweep per doc §5.3.
+  #
+  # NOTE: val_N / val_K MUST match the production estimator budget
+  # (samples_per_class / probes_per_sample above). A smaller validation
+  # budget makes the S-to-S comparison MC-noise-limited rather than
+  # discretization-limited and produces spurious GATE failures.
   solver_steps: [128, 256, 512, 1024]
   num_classes: 4                           # first 4 selected classes only
-  val_N: 8
-  val_K: 16
+  val_N: 64                                # = production samples_per_class
+  val_K: 64                                # = production probes_per_sample
   finite_difference_delta: [1.0e-4, 5.0e-4, 1.0e-3, 5.0e-3]
   autograd_vjp: true
   autograd_vjp_dtype: "fp64"

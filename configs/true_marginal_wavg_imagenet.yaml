@@ -81,10 +81,16 @@ validation:
 
   # Solver-convergence at fixed T (revision doc §5.3, §6).
   # Curves at each S are aligned in continuous time before comparison.
+  #
+  # NOTE: val_N / val_K MUST match the production estimator budget
+  # (samples_per_class / probes_per_sample above). Using a smaller budget
+  # here makes the S-to-S comparison Monte-Carlo-noise-limited rather than
+  # discretization-limited, and produces spurious GATE failures that do
+  # not reflect the actual production run.
   solver_steps: [128, 256, 512, 1024]
   num_classes: 4                           # first 4 selected classes only
-  val_N: 8
-  val_K: 16
+  val_N: 64                                # = production samples_per_class
+  val_K: 64                                # = production probes_per_sample
 
   # Finite-difference trace-averaged agreement (revision doc §3, §6).
   finite_difference_delta: [1.0e-4, 5.0e-4, 1.0e-3, 5.0e-3]
