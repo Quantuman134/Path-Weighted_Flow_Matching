@@ -744,6 +744,14 @@ def marginal_moment_validation(
         E[z_t | c]     = t * y_bar_c
         Cov(z_t | c)   = (1-t)^2 I + t^2 Cov(y | c).
     We compare integrated  z_n  moments to these predictions at each report index.
+
+    We report TWO metrics for the mean:
+      * mean_rel_err_raw  : ||emp - pred|| / ||pred||
+                            (undefined at t=0; blows up when pred_mean ≈ 0)
+      * mean_rel_err_MC   : ||emp - pred|| / ( ||pred|| + (1-t)*sqrt(D/N_val) )
+                            Bounded, well-defined for all t, incl. t=0.
+                            Values ≲ 3 indicate agreement within the expected
+                            Monte-Carlo noise floor.
     """
     M, D = Y.shape
     y_sq = (Y * Y).sum(dim=1, keepdim=True).T
@@ -758,15 +766,28 @@ def marginal_moment_validation(
 
     idx_to_pos = {s: i for i, s in enumerate(report_indices)}
     T_rep = len(report_indices)
-    mean_rel_err = np.zeros(T_rep)
-    tr_cov_rel_err = np.zeros(T_rep)
+    mean_rel_err_raw = np.zeros(T_rep)
+    mean_rel_err_MC  = np.zeros(T_rep)
+    tr_cov_rel_err   = np.zeros(T_rep)
 
     def _record(pos, Zc, t):
         emp_mean = Zc.mean(dim=0)                                       # (D,)
         pred_mean = t * y_bar
-        num = (emp_mean - pred_mean).to(torch.float64).norm().item()
-        den = pred_mean.to(torch.float64).norm().item() + 1e-30
-        mean_rel_err[pos] = num / den
+        num  = (emp_mean - pred_mean).to(torch.float64).norm().item()
+        pnrm = pred_mean.to(torch.float64).norm().item()
+
+        # Raw (original) relative error; retained for reference.
+        mean_rel_err_raw[pos] = num / (pnrm + 1e-30)
+
+        # MC-noise-normalized error.
+        # Under the ideal marginal, Cov(z_t) = (1-t)^2 I + t^2 Cov(y|c),
+        # so the per-coord std of the sample mean of z_t over N_val samples is
+        #   ~ sqrt( ((1-t)^2 + t^2 * trace(Cov(y|c))/D) / N_val ).
+        # Its vector-norm scale is sqrt(D) * per-coord std.
+        # We keep the leading Gaussian floor (1-t)*sqrt(D/N_val) as an
+        # unconditional lower bound (the (1-t) term dominates for t << 1).
+        mc_floor = (1.0 - t) * math.sqrt(D / max(1, N_val))
+        mean_rel_err_MC[pos] = num / (pnrm + mc_floor + 1e-30)
 
         Zc_centered = Zc - emp_mean
         tr_emp = float((Zc_centered.to(torch.float64) ** 2).sum().item() / max(1, N_val))
@@ -785,7 +806,10 @@ def marginal_moment_validation(
                 _record(idx_to_pos[n + 1], Z, (n + 1) * h)
 
     return {
-        "mean_rel_err": mean_rel_err,
+        # Primary metric (bounded, well-defined at all t):
+        "mean_rel_err":     mean_rel_err_MC,
+        # Kept for backward-compatibility / reference:
+        "mean_rel_err_raw": mean_rel_err_raw,
         "cov_trace_rel_err": tr_cov_rel_err,
         "actual_times": [float(s_i * h) for s_i in report_indices],
     }
@@ -1729,10 +1753,17 @@ def main():
                                for t in moment_records[0]["actual_times"])
                 f.write("class_id,class_name,metric," + hdr + "\n")
                 for r in moment_records:
-                    row_mean = ",".join(f"{v:.6e}" for v in r["mean_rel_err"])
-                    row_cov  = ",".join(f"{v:.6e}" for v in r["cov_trace_rel_err"])
-                    f.write(f"{r['class_id']},{r['class_name']},mean_rel_err,{row_mean}\n")
-                    f.write(f"{r['class_id']},{r['class_name']},cov_trace_rel_err,{row_cov}\n")
+                    row_mean_mc  = ",".join(f"{v:.6e}" for v in r["mean_rel_err"])
+                    row_mean_raw = ",".join(f"{v:.6e}" for v in r["mean_rel_err_raw"])
+                    row_cov      = ",".join(f"{v:.6e}" for v in r["cov_trace_rel_err"])
+                    # Primary metric: MC-noise-normalized; well-defined at all t.
+                    f.write(f"{r['class_id']},{r['class_name']},"
+                            f"mean_rel_err_MC,{row_mean_mc}\n")
+                    # Reference metric: raw ratio; undefined at t=0.
+                    f.write(f"{r['class_id']},{r['class_name']},"
+                            f"mean_rel_err_raw,{row_mean_raw}\n")
+                    f.write(f"{r['class_id']},{r['class_name']},"
+                            f"cov_trace_rel_err,{row_cov}\n")
 
         # ---- simple convergence plot -------------------------------------
         plt = _lazy_plt()
