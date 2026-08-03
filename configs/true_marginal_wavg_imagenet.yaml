@@ -1,0 +1,79 @@
+# ============================================================
+# Configuration for exp_true_marginal_wavg.py
+#
+# Estimate w_avg(t) on the analytic class-conditional marginal flow of the
+# empirical ImageNet latent distribution. No neural velocity model is used;
+# v_c(z, t) is computed in closed form from the pre-encoded latents of each
+# selected ImageNet class.
+#
+# See tmp/true_marginal_flow_wavg_experiment_plan_C32_v2.html for the full
+# derivation.
+# ============================================================
+
+experiment:
+  name: "true_marginal_wavg_imagenet"
+  # Class selection, epsilon draws, initial noise, and probes all seed off this.
+  seed: 2026
+
+# Output directory. If overridden on the CLI (--output), that takes precedence.
+# If both are unset, we fall back to <experiments_base_dir>/<experiment.name>.
+output_dir: "./experiment/true_marginal_wavg_imagenet"
+experiments_base_dir: "./experiment"
+
+# ── data ─────────────────────────────────────────────────────────────────
+# latent_root: directory of per-class packed .npy latents (mirror of
+# training data, see PackedLatentImageFolder in train.py). Each file has
+# shape (M_c, 2, 2, 4, H, W) fp32.
+data:
+  latent_root: "/scratch/project/prj-02-visual-ai/hkzhang/ILSVRC/latents_packed/train"
+  num_available_classes: 1000
+  # First run uses C=32 (exactly 4 classes per GPU with 8 ranks).
+  num_test_classes: 32
+  class_selection: "uniform_without_replacement"   # controlled by seed
+  # Fixed epsilon per image (finite point-cloud target, per plan §1 and §12).
+  use_all_targets_in_class: true
+
+# ── flow / solver ────────────────────────────────────────────────────────
+flow:
+  target_distribution: "empirical_discrete"
+  solver: "euler"
+  solver_steps: 256
+  # 16 reporting indices along the S=256 Euler grid (t_j = s_j / S).
+  # These include s=0 (t=0) and s=256 (t=1, terminal identity).
+  report_indices: [0, 17, 34, 51, 68, 85, 102, 119, 137,
+                   154, 171, 188, 205, 222, 239, 256]
+
+# ── estimator ────────────────────────────────────────────────────────────
+estimator:
+  samples_per_class: 64          # N
+  probes_per_sample: 64          # K
+  probe_type: "rademacher"
+  precision: "fp32"
+  bootstrap_replicates: 10000
+
+# ── distributed ──────────────────────────────────────────────────────────
+distributed:
+  world_size: 8
+  class_assignment: "round_robin"
+
+# ── logging ──────────────────────────────────────────────────────────────
+logging:
+  echo_stdout: true              # rank 0 prints progress to stdout
+  progress_interval_steps: 8     # print progress every N Euler steps
+  jsonl: true
+  checkpoint_each_class: true
+  profile_latency: true
+  show_eta_field: true
+
+# ── validation subruns (run after the main sweep, rank 0 only) ───────────
+# Turn off (enabled: false) if you want the shortest possible pass.
+validation:
+  enabled: true
+  solver_steps: [128, 256, 512]
+  num_classes: 8                  # first 8 selected classes
+  val_N: 8
+  val_K: 16
+  finite_difference_eta: [1.0e-4, 1.0e-3]
+
+# Single-GPU fallback (only used when torchrun is NOT launching the script).
+device: "cuda:0"
