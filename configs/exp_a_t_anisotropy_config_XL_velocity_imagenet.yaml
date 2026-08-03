@@ -1,0 +1,43 @@
+# Independent multi-probe anisotropy experiment for the frozen SiT-XL teacher.
+
+experiment:
+  name: a_t_anisotropy_SiT_XL_velocity_imagenet
+  output_dir: ./experiment
+
+checkpoint:
+  ckpt_path: ./results/SiT-XL-2-Linear-velocity-None-velocity-IS256-BS1024-imagenet-pretrained/checkpoints/0300000.pt
+  use_ema: true
+
+model_overrides:
+  model: SiT-XL/2
+  image_size: 256
+  num_classes: 1000
+  vae: ema
+  path_type: Linear
+  prediction: velocity
+  latent_scale: 1.0
+
+data:
+  packed_latent_data_path: /scratch/project/prj-02-visual-ai/hkzhang/ILSVRC/latents_packed/train
+  data_path: /scratch/project/prj-02-visual-ai/hkzhang/ILSVRC/Data/CLS-LOC/train
+  latent_scale: 1.0
+  orientation: 0
+  loading_batch_size: 64
+  num_workers: 4
+
+eval:
+  # Build the same fixed pool as the N=512 one-probe experiment, then take its
+  # first 64 states. This permits direct sample-level comparisons between runs.
+  sample_pool_size: 512
+  num_states: 64
+  num_probes_per_state: 16
+  batch_size: 64                 # 64 state-probe pairs; teacher batch is 128
+  seed: 42
+  time_steps: [0.09375, 0.46875, 0.90625, 1.0]
+  eta: 1.0e-3
+  base_steps: 128
+  compute_dtype: float32
+  cv_epsilon: 1.0e-12
+  save_states_and_probes: true
+
+device: cuda:0
