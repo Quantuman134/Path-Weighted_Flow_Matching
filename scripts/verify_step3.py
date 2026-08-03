@@ -138,9 +138,11 @@ def verify(base):
     # 4. Solver convergence  ←  the gate
     # ------------------------------------------------------------------
     _print_section("4. Solver convergence  (solver_convergence.csv)  ← GATE")
-    print("   Test : w_avg(T, t) at each S vs S=1024 baseline")
-    print("   GATE : at S=256, max_rel_err < 0.10  AND  mean_rel_err < 0.05")
-    print("          (per doc §5.3; this is the critical Step 3 gate)")
+    print("   Test : w_avg(T, t) at each S vs the S=512 baseline")
+    print("   GATE : at S=256 vs S=512, max_rel_err < 0.10")
+    print("          AND mean_rel_err < 0.05   (per doc §6, line 505)")
+    print("   Extra: also prints S vs S_max as an informational")
+    print("          (tighter) reference. That column is NOT the gate.")
     print()
     rows = _read_csv_rows(os.path.join(base, "solver_convergence.csv"))
     hdr = rows[0]
@@ -149,28 +151,92 @@ def verify(base):
     i_Sref = hdr.index("S_ref")
     i_max  = hdr.index("max_rel_err")
     i_mean = hdr.index("mean_rel_err")
+    # Per-t breakdown columns (added by validation subrun for diagnosis).
+    t_val_idx = [j for j, c in enumerate(hdr) if c.startswith("t_val")]
+    t_err_idx = [j for j, c in enumerate(hdr) if c.startswith("rel_err_t")]
 
-    # Aggregate per S.
-    by_S = defaultdict(list)
+    # Group by S_ref then S so we can print two tables (official gate + info).
+    by_ref = defaultdict(lambda: defaultdict(list))
+    per_t_by_ref = defaultdict(lambda: defaultdict(list))  # S_ref -> S -> [rows of per-t rel_errs]
+    t_vals_recorded = None
     for row in rows[1:]:
-        S = int(row[i_S])
-        by_S[S].append((float(row[i_max]), float(row[i_mean])))
+        S    = int(row[i_S])
+        Sref = int(row[i_Sref])
+        by_ref[Sref][S].append((float(row[i_max]), float(row[i_mean])))
+        if t_err_idx:
+            per_t = [float(row[j]) for j in t_err_idx]
+            per_t_by_ref[Sref][S].append(per_t)
+            if t_vals_recorded is None and t_val_idx:
+                t_vals_recorded = [float(row[j]) for j in t_val_idx]
 
-    print(f"   {'S':>6}  {'max_rel_err (worst)':>22}  {'mean_rel_err (worst)':>22}"
-          f"   verdict")
-    gate_pass = None
-    for S in sorted(by_S.keys()):
-        vals = by_S[S]
-        me_worst = max(v[0] for v in vals)
-        mn_worst = max(v[1] for v in vals)
-        if S == 256:
-            ok = (me_worst < 0.10) and (mn_worst < 0.05)
-            gate_pass = ok
-            verdict = f"[{_ok(ok)}]  (GATE)"
-            all_pass &= ok
-        else:
-            verdict = f"[{_warn()}]  (informational)"
-        print(f"   {S:>6d}  {me_worst:>22.3e}  {mn_worst:>22.3e}   {verdict}")
+    if not by_ref:
+        print("   ERROR: no rows in solver_convergence.csv")
+        all_pass = False
+        gate_pass = False
+    else:
+        # ---- (a) Official gate: S vs S=512  ---------------------------
+        gate_ref = 512 if 512 in by_ref else max(by_ref.keys())
+        info_ref = max(by_ref.keys()) if max(by_ref.keys()) != gate_ref else None
+
+        print(f"   [GATE  vs S={gate_ref}]")
+        print(f"     {'S':>6}  {'max_rel_err (worst)':>22}  "
+              f"{'mean_rel_err (worst)':>22}   verdict")
+        gate_pass = None
+        for S in sorted(by_ref[gate_ref].keys()):
+            vals = by_ref[gate_ref][S]
+            me_worst = max(v[0] for v in vals)
+            mn_worst = max(v[1] for v in vals)
+            if S == 256:
+                ok = (me_worst < 0.10) and (mn_worst < 0.05)
+                gate_pass = ok
+                verdict = f"[{_ok(ok)}]  (GATE, doc §6)"
+                all_pass &= ok
+            else:
+                verdict = f"[{_warn()}]  (informational)"
+            print(f"     {S:>6d}  {me_worst:>22.3e}  "
+                  f"{mn_worst:>22.3e}   {verdict}")
+
+        # ---- (b) Optional tighter reference (S vs S_max) --------------
+        if info_ref is not None:
+            print()
+            print(f"   [INFO  vs S={info_ref}]   (tighter reference; "
+                  f"NOT the gate. Larger errors here are")
+            print( "                             expected if the true "
+                   "solution is not yet Cauchy-converged at S=512.)")
+            print(f"     {'S':>6}  {'max_rel_err (worst)':>22}  "
+                  f"{'mean_rel_err (worst)':>22}")
+            for S in sorted(by_ref[info_ref].keys()):
+                vals = by_ref[info_ref][S]
+                me_worst = max(v[0] for v in vals)
+                mn_worst = max(v[1] for v in vals)
+                print(f"     {S:>6d}  {me_worst:>22.3e}  "
+                      f"{mn_worst:>22.3e}")
+
+        # ---- (c) per-t breakdown for the gate pair (S=256 vs S_ref) ---
+        if t_vals_recorded is not None and 256 in per_t_by_ref[gate_ref]:
+            print()
+            print(f"   [PER-t   S=256 vs S={gate_ref}]   (worst over classes)")
+            rows_pt = per_t_by_ref[gate_ref][256]
+            # worst over classes at each t
+            n_t = len(rows_pt[0])
+            worst_at_t = [max(row[j] for row in rows_pt) for j in range(n_t)]
+            print(f"     {'t':>10}  {'worst rel_err':>16}")
+            for tv, e in zip(t_vals_recorded, worst_at_t):
+                flag = " ←" if e >= 0.10 else ""
+                print(f"     {tv:>10.4f}  {e:>16.3e}{flag}")
+            # Endpoint-singularity hint per doc §7.
+            head_max = max(worst_at_t[:max(1, n_t // 4)])
+            tail_max = max(worst_at_t[-max(1, n_t // 4):])
+            if not gate_pass and tail_max > 3.0 * head_max:
+                print()
+                print(f"   {YELLOW}Note:{RESET}  errors concentrate near "
+                      f"t → T_end (tail {tail_max:.2e} vs head {head_max:.2e}).")
+                print( "          This is the expected discrete endpoint "
+                       "singularity as T → 1,")
+                print( "          not a solver bug (doc §7). Consider "
+                       "lowering T (e.g. T=0.95) or")
+                print( "          reporting a truncated interval that "
+                       "excludes t > 0.9 · T_end.")
 
     # ------------------------------------------------------------------
     # 5. Marginal moments

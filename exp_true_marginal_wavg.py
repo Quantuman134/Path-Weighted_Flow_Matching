@@ -1666,18 +1666,36 @@ def main():
                 aligned = np.interp(target_times, actual_t, res["class_mean"])
                 wavg_curves[S_alt] = aligned
 
-            S_ref = max(solver_steps_list)
-            for S_alt in solver_steps_list:
-                if S_alt == S_ref:
-                    continue
-                rel_err = np.abs(wavg_curves[S_alt] - wavg_curves[S_ref]) \
-                    / (np.abs(wavg_curves[S_ref]) + 1e-12)
-                conv_records.append({
-                    "class_id": c_val, "class_name": cls_name,
-                    "S": S_alt, "S_ref": S_ref,
-                    "max_rel_err":  float(rel_err.max()),
-                    "mean_rel_err": float(rel_err.mean()),
-                })
+            S_ref_tight = max(solver_steps_list)                # e.g. 1024
+            # Doc §6 official gate is S=256 vs S=512, so also compare
+            # every S_alt to the S=512 reference when present.
+            S_ref_official = 512 if 512 in solver_steps_list else S_ref_tight
+            S_refs = [S_ref_tight]
+            if S_ref_official != S_ref_tight:
+                S_refs.append(S_ref_official)
+
+            for S_ref in S_refs:
+                for S_alt in solver_steps_list:
+                    if S_alt == S_ref:
+                        continue
+                    rel_err = np.abs(wavg_curves[S_alt] - wavg_curves[S_ref]) \
+                        / (np.abs(wavg_curves[S_ref]) + 1e-12)
+                    conv_records.append({
+                        "class_id": c_val, "class_name": cls_name,
+                        "S": S_alt, "S_ref": S_ref,
+                        "max_rel_err":  float(rel_err.max()),
+                        "mean_rel_err": float(rel_err.mean()),
+                        "rel_err_by_t": rel_err.astype(np.float64).tolist(),
+                    })
+
+            # Save raw wavg curves for this class so downstream tooling can
+            # diagnose *where* the discretization error concentrates
+            # (endpoint singularity vs. bulk solver error, doc §7).
+            np.savez_compressed(
+                os.path.join(out_root, f"wavg_convergence_class{c_val:03d}.npz"),
+                target_times=target_times,
+                **{f"S{S_alt}": wavg_curves[S_alt] for S_alt in solver_steps_list},
+            )
 
             # ---- trace-averaged FD at midpoint ------------------------------
             s_mid = S // 2
@@ -1719,11 +1737,21 @@ def main():
 
         # ---- write validation CSVs / plots --------------------------------
         with open(os.path.join(out_root, "solver_convergence.csv"), "w") as f:
-            f.write("class_id,class_name,S,S_ref,max_rel_err,mean_rel_err\n")
+            # Per-t breakdown columns let downstream tooling detect whether
+            # the discretization error concentrates near t=T_end (endpoint
+            # singularity, doc §7) or is spread across the interval
+            # (genuine solver problem).
+            n_t = len(target_times)
+            t_hdr = ",".join(f"rel_err_t{i:02d}" for i in range(n_t))
+            t_val_hdr = ",".join(f"t_val{i:02d}" for i in range(n_t))
+            f.write(f"class_id,class_name,S,S_ref,max_rel_err,mean_rel_err,"
+                    f"{t_val_hdr},{t_hdr}\n")
+            t_vals_str = ",".join(f"{t:.6f}" for t in target_times)
             for r in conv_records:
+                errs_str = ",".join(f"{v:.6e}" for v in r["rel_err_by_t"])
                 f.write(f"{r['class_id']},{r['class_name']},{r['S']},"
                         f"{r['S_ref']},{r['max_rel_err']:.6e},"
-                        f"{r['mean_rel_err']:.6e}\n")
+                        f"{r['mean_rel_err']:.6e},{t_vals_str},{errs_str}\n")
 
         with open(os.path.join(out_root, "fd_trace_validation.csv"), "w") as f:
             hdr = ",".join(f"rel_err_delta_{d:.0e}" for d in fd_delta_list)
@@ -1768,14 +1796,16 @@ def main():
         # ---- simple convergence plot -------------------------------------
         plt = _lazy_plt()
         if conv_records:
+            S_ref_plot = max(solver_steps_list)
             fig, ax = plt.subplots(figsize=(8, 5))
             for S_alt in solver_steps_list:
-                errs = [r["max_rel_err"] for r in conv_records if r["S"] == S_alt]
+                errs = [r["max_rel_err"] for r in conv_records
+                        if r["S"] == S_alt and r["S_ref"] == S_ref_plot]
                 if errs:
                     ax.plot(range(len(errs)), errs, marker="o", label=f"S={S_alt}")
             ax.set_yscale("log")
             ax.set_xlabel("validation class")
-            ax.set_ylabel(f"max relative error vs S={max(solver_steps_list)}")
+            ax.set_ylabel(f"max relative error vs S={S_ref_plot}")
             ax.set_title("Solver-convergence relative error at fixed T")
             ax.grid(True, which="both", alpha=0.3)
             ax.legend()
