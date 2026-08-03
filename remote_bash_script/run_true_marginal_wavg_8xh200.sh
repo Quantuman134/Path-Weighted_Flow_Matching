@@ -1,11 +1,17 @@
 #!/bin/bash
-# Analytic marginal w_avg(t) on the empirical ImageNet latent distribution.
-# See tmp/true_marginal_flow_wavg_experiment_plan_C32_v2.html and
+# Analytic marginal w_avg(T, t) on the empirical ImageNet latent distribution
+# (revision v2, 2026-08-03).
+#
+# See tmp/true_marginal_wavg_required_revisions.html and
 # exp_true_marginal_wavg.py.
 #
 # The main run shards C=32 classes round-robin across 8 H200 GPUs
-# (4 classes per rank). Only the final aggregation and validation
+# (4 classes per rank). Only the final aggregation and the validation
 # subrun happen on rank 0.
+#
+# To run a sweep at (T, S) other than the config default, edit the config
+# fields flow.terminal_time / flow.solver_steps and either pass a new
+# --output dir on the second CLI arg, or set output_dir inside the config.
 
 set -euo pipefail
 
@@ -16,14 +22,14 @@ cd /scratch/project/prj-02-visual-ai/hkzhang/Path-Weighted_Flow_Matching
 NUM_GPUS=8
 SINGLE_GPU_DEVICE="cuda:0"
 CONFIG="${1:-configs/true_marginal_wavg_imagenet.yaml}"
-OUT="${2:-experiment/true_marginal_wavg_imagenet}"
+OUT="${2:-experiment/true_marginal_wavg_imagenet_T099_S256}"
 MASTER_PORT=$(( RANDOM % 3268 + 29500 ))
 
 mkdir -p "${OUT}"
 nvidia-smi | tee "${OUT}/nvidia_smi.txt" > /dev/null
 
 echo "════════════════════════════════════════════════════════"
-echo " Experiment  : true_marginal_wavg_imagenet (analytic marginal flow)"
+echo " Experiment  : true_marginal_wavg_imagenet (revision v2, T<1 fixed)"
 echo " Config      : $CONFIG"
 echo " Output dir  : $OUT"
 echo " GPUs        : $NUM_GPUS"
