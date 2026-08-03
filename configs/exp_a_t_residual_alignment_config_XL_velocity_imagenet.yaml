@@ -1,0 +1,66 @@
+# Residual-alignment pilot built on the independent multi-probe experiment.
+# The final EMA XL model defines the frozen flow map. The non-EMA weights from
+# the same checkpoint act as a clean marginal-residual proxy student.
+
+experiment:
+  name: a_t_residual_alignment_SiT_XL_velocity_imagenet
+  output_dir: ./experiment
+
+checkpoint:
+  ckpt_path: ./results/SiT-XL-2-Linear-velocity-None-velocity-IS256-BS1024-imagenet-pretrained/checkpoints/0300000.pt
+  weight_key: ema
+
+student_checkpoint:
+  # This may instead point to an earlier checkpoint or another compatible
+  # velocity model. With this default, student=model and teacher=EMA.
+  ckpt_path: ./results/SiT-XL-2-Linear-velocity-None-velocity-IS256-BS1024-imagenet-pretrained/checkpoints/0300000.pt
+  weight_key: model
+
+model_overrides:
+  model: SiT-XL/2
+  image_size: 256
+  num_classes: 1000
+  vae: ema
+  path_type: Linear
+  prediction: velocity
+  latent_scale: 1.0
+
+student_model_overrides:
+  model: SiT-XL/2
+  image_size: 256
+  num_classes: 1000
+  vae: ema
+  path_type: Linear
+  prediction: velocity
+  latent_scale: 1.0
+
+data:
+  packed_latent_data_path: /scratch/project/prj-02-visual-ai/hkzhang/ILSVRC/latents_packed/train
+  data_path: /scratch/project/prj-02-visual-ai/hkzhang/ILSVRC/Data/CLS-LOC/train
+  latent_scale: 1.0
+  orientation: 0
+  loading_batch_size: 64
+  num_workers: 4
+
+eval:
+  # Reconstruct the exact same state/probe pool used by the anisotropy run.
+  sample_pool_size: 512
+  num_states: 64
+  num_probes_per_state: 16
+  batch_size: 64                 # Pair batch 64; teacher rollout batch 128.
+  seed: 42
+  time_steps: [0.09375, 0.46875, 0.90625]
+  eta: 1.0e-3
+  base_steps: 128
+  compute_dtype: float32
+  cv_epsilon: 1.0e-12
+  save_states_and_probes: true
+
+residual_alignment:
+  enabled: true
+  # Directions below this velocity-residual norm are filtered rather than
+  # turning floating-point noise into a unit vector.
+  min_residual_norm: 1.0e-8
+  save_residual_directions: true
+
+device: cuda:0

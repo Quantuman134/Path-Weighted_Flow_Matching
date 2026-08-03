@@ -13,11 +13,15 @@ using the law of total variance, including the finite-M correction
 The absolute directional fraction is complemented by the state-wise,
 scale-normalized directional CV^2 = Var_m(A_im) / mean_m(A_im)^2.  This script
 is deliberately separate from exp_a_t.py so the main a(t) estimator does not
-pay the M-probe cost.
+pay the M-probe cost. Optionally, it also compares the same random-probe bank
+with the normalized velocity residual between a frozen student and teacher.
 
 Usage:
     python exp_a_t_anisotropy.py \
         --config configs/exp_a_t_anisotropy_config_XL_velocity_imagenet.yaml
+
+    python exp_a_t_anisotropy.py \
+        --config configs/exp_a_t_residual_alignment_config_XL_velocity_imagenet.yaml
 """
 
 import argparse
@@ -34,7 +38,9 @@ import numpy as np
 import torch
 
 from exp_a_t import (
+    _autocast_context,
     collect_fixed_samples,
+    evaluate_at_time,
     finite_difference_targets,
     format_duration,
     load_config,
@@ -86,6 +92,52 @@ def validate_eval_config(eval_cfg: dict) -> dict:
         raise ValueError("eval.cv_epsilon must be positive")
     parse_compute_dtype(parsed["compute_dtype"])
     return parsed
+
+
+def validate_residual_alignment_config(cfg: dict) -> dict:
+    """Parse the optional residual-direction alignment pilot."""
+    residual_cfg = cfg.get("residual_alignment", {})
+    enabled = residual_cfg.get("enabled", False)
+    save_directions = residual_cfg.get("save_residual_directions", True)
+    if not isinstance(enabled, bool):
+        raise TypeError("residual_alignment.enabled must be a YAML boolean")
+    if not isinstance(save_directions, bool):
+        raise TypeError(
+            "residual_alignment.save_residual_directions must be a YAML boolean"
+        )
+    parsed = {
+        "enabled": enabled,
+        "min_residual_norm": float(
+            residual_cfg.get("min_residual_norm", 1e-8)
+        ),
+        "save_residual_directions": save_directions,
+    }
+    if parsed["min_residual_norm"] <= 0.0:
+        raise ValueError("residual_alignment.min_residual_norm must be positive")
+    if enabled and "student_checkpoint" not in cfg:
+        raise ValueError(
+            "student_checkpoint is required when residual_alignment.enabled=true"
+        )
+    return parsed
+
+
+def checkpoint_weight_key(checkpoint_cfg: dict) -> str:
+    """Resolve an explicit checkpoint key or the legacy use_ema switch."""
+    if checkpoint_cfg.get("weight_key") is not None:
+        return str(checkpoint_cfg["weight_key"])
+    return "ema" if checkpoint_cfg.get("use_ema", True) else "model"
+
+
+def validate_student_model_args(teacher_args, student_args) -> None:
+    """Require teacher/student fields needed for a pointwise velocity residual."""
+    for field in ("image_size", "num_classes", "path_type", "prediction"):
+        teacher_value = getattr(teacher_args, field)
+        student_value = getattr(student_args, field)
+        if student_value != teacher_value:
+            raise ValueError(
+                f"Student {field}={student_value!r} does not match "
+                f"teacher {field}={teacher_value!r}"
+            )
 
 
 def make_fixed_states_and_probe_bank(
@@ -170,6 +222,107 @@ def evaluate_multi_probe_at_time(
     return torch.cat(targets).reshape(num_states, num_probes)
 
 
+@torch.inference_mode()
+def compute_residual_directions_at_time(
+    teacher: torch.nn.Module,
+    student: torch.nn.Module,
+    z0_cpu: torch.Tensor,
+    z1_cpu: torch.Tensor,
+    labels_cpu: torch.Tensor,
+    t_value: float,
+    batch_size: int,
+    compute_dtype,
+    device: torch.device,
+    min_residual_norm: float,
+) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    """Return unit student-minus-teacher residual directions for every state.
+
+    States whose velocity residual norm is below ``min_residual_norm`` are
+    marked invalid rather than normalizing numerical noise. Their direction is
+    stored as zero and their aligned gain is omitted from downstream summaries.
+    """
+    directions = []
+    residual_norm_squared = []
+    valid_masks = []
+    for start in range(0, len(z1_cpu), batch_size):
+        end = min(start + batch_size, len(z1_cpu))
+        z0 = z0_cpu[start:end].to(device, non_blocking=True)
+        z1 = z1_cpu[start:end].to(device, non_blocking=True)
+        labels = labels_cpu[start:end].to(device, non_blocking=True)
+        z_t = ((1.0 - t_value) * z0 + t_value * z1).float()
+        times = torch.full(
+            (end - start,), t_value, device=device, dtype=torch.float32
+        )
+        with _autocast_context(device, compute_dtype):
+            teacher_velocity = teacher(z_t, times, y=labels)
+            student_velocity = student(z_t, times, y=labels)
+        residual = student_velocity.float() - teacher_velocity.float()
+        residual_norm = residual.flatten(1).norm(dim=1)
+        valid = residual_norm >= min_residual_norm
+        direction = torch.zeros_like(residual)
+        if valid.any():
+            norm_view = residual_norm[valid].reshape(
+                int(valid.sum().item()), *([1] * (residual.ndim - 1))
+            )
+            direction[valid] = residual[valid] / norm_view
+        directions.append(direction.cpu())
+        residual_norm_squared.append(residual_norm.double().square().cpu())
+        valid_masks.append(valid.cpu())
+    return (
+        torch.cat(directions),
+        torch.cat(residual_norm_squared),
+        torch.cat(valid_masks),
+    )
+
+
+@torch.inference_mode()
+def evaluate_residual_alignment_at_time(
+    teacher: torch.nn.Module,
+    student: torch.nn.Module,
+    z0_cpu: torch.Tensor,
+    z1_cpu: torch.Tensor,
+    labels_cpu: torch.Tensor,
+    t_value: float,
+    batch_size: int,
+    eta: float,
+    base_steps: int,
+    compute_dtype,
+    device: torch.device,
+    min_residual_norm: float,
+) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+    """Measure teacher-flow gain along the normalized model residual direction."""
+    directions, residual_norm_squared, valid = compute_residual_directions_at_time(
+        teacher=teacher,
+        student=student,
+        z0_cpu=z0_cpu,
+        z1_cpu=z1_cpu,
+        labels_cpu=labels_cpu,
+        t_value=t_value,
+        batch_size=batch_size,
+        compute_dtype=compute_dtype,
+        device=device,
+        min_residual_norm=min_residual_norm,
+    )
+    gains = torch.full((len(z1_cpu),), torch.nan, dtype=torch.float64)
+    valid_indices = valid.nonzero(as_tuple=False).flatten()
+    if valid_indices.numel() > 0:
+        valid_gains = evaluate_at_time(
+            teacher=teacher,
+            z0_cpu=z0_cpu[valid_indices],
+            z1_cpu=z1_cpu[valid_indices],
+            q_cpu=directions[valid_indices],
+            labels_cpu=labels_cpu[valid_indices],
+            t_value=t_value,
+            batch_size=batch_size,
+            eta=eta,
+            base_steps=base_steps,
+            compute_dtype=compute_dtype,
+            device=device,
+        )
+        gains[valid_indices] = valid_gains
+    return gains, residual_norm_squared, valid, directions
+
+
 def distribution_summary(values: torch.Tensor) -> dict:
     values = values.double().reshape(-1)
     count = int(values.numel())
@@ -183,6 +336,89 @@ def distribution_summary(values: torch.Tensor) -> dict:
         "min": values.min().item(),
         "max": values.max().item(),
     }
+
+
+def summarize_residual_alignment(
+    random_targets: torch.Tensor,
+    residual_gains: torch.Tensor,
+    residual_norm_squared: torch.Tensor,
+    residual_valid: torch.Tensor,
+    denominator_epsilon: float,
+) -> Tuple[dict, Dict[str, torch.Tensor]]:
+    """Compare residual-direction gain against the same state's random probes."""
+    random_values = random_targets.double()
+    random_mean = random_values.mean(dim=1)
+    valid = (
+        residual_valid.bool()
+        & torch.isfinite(residual_gains)
+        & torch.isfinite(residual_norm_squared)
+        & (random_mean > denominator_epsilon)
+    )
+    valid_count = int(valid.sum().item())
+    if valid_count == 0:
+        raise RuntimeError("No valid residual directions remain after filtering")
+
+    alignment_ratio = torch.full_like(residual_gains, torch.nan)
+    probe_percentile = torch.full_like(residual_gains, torch.nan)
+    propagated_residual_energy = torch.full_like(residual_gains, torch.nan)
+    random_baseline_energy = torch.full_like(residual_gains, torch.nan)
+    alignment_ratio[valid] = residual_gains[valid] / random_mean[valid]
+    probe_percentile[valid] = (
+        random_values[valid] <= residual_gains[valid, None]
+    ).double().mean(dim=1)
+    propagated_residual_energy[valid] = (
+        residual_norm_squared[valid] * residual_gains[valid]
+    )
+    random_baseline_energy[valid] = (
+        residual_norm_squared[valid] * random_mean[valid]
+    )
+
+    valid_random_mean = random_mean[valid]
+    valid_residual_gain = residual_gains[valid]
+    valid_norm_squared = residual_norm_squared[valid]
+    valid_alignment_ratio = alignment_ratio[valid]
+    valid_percentile = probe_percentile[valid]
+    valid_propagated_energy = propagated_residual_energy[valid]
+    valid_baseline_energy = random_baseline_energy[valid]
+    summary = {
+        "num_states": int(len(random_mean)),
+        "num_valid_states": valid_count,
+        "num_filtered_states": int(len(random_mean) - valid_count),
+        "mean_random_gain": valid_random_mean.mean().item(),
+        "mean_residual_aligned_gain": valid_residual_gain.mean().item(),
+        "ratio_of_mean_gains": (
+            valid_residual_gain.mean() / valid_random_mean.mean()
+        ).item(),
+        "magnitude_weighted_alignment_ratio": (
+            valid_propagated_energy.sum()
+            / valid_baseline_energy.sum().clamp_min(denominator_epsilon)
+        ).item(),
+        "fraction_alignment_ratio_above_one": (
+            valid_alignment_ratio > 1.0
+        ).double().mean().item(),
+        "fraction_probe_percentile_at_least_0_9": (
+            valid_percentile >= 0.9
+        ).double().mean().item(),
+        "residual_norm_squared_statistics": distribution_summary(valid_norm_squared),
+        "random_gain_statistics": distribution_summary(valid_random_mean),
+        "residual_aligned_gain_statistics": distribution_summary(valid_residual_gain),
+        "alignment_ratio_statistics": distribution_summary(valid_alignment_ratio),
+        "probe_percentile_statistics": distribution_summary(valid_percentile),
+        "propagated_residual_energy_statistics": distribution_summary(
+            valid_propagated_energy
+        ),
+    }
+    per_state = {
+        "valid": valid,
+        "residual_norm_squared": residual_norm_squared.double(),
+        "random_gain": random_mean,
+        "residual_aligned_gain": residual_gains.double(),
+        "alignment_ratio": alignment_ratio,
+        "probe_percentile": probe_percentile,
+        "propagated_residual_energy": propagated_residual_energy,
+        "random_baseline_energy": random_baseline_energy,
+    }
+    return summary, per_state
 
 
 def summarize_anisotropy(
@@ -342,6 +578,195 @@ def save_outputs(
     plot_diagnostics(output_dir, times, summaries)
 
 
+def save_residual_alignment_outputs(
+    output_dir: str,
+    times: Sequence[float],
+    residual_gains: torch.Tensor,
+    residual_norm_squared: torch.Tensor,
+    residual_directions: torch.Tensor,
+    per_state_by_time: List[Dict[str, torch.Tensor]],
+    summaries: List[dict],
+    sample_indices: np.ndarray,
+    labels: torch.Tensor,
+    metadata: dict,
+    save_residual_directions: bool,
+) -> None:
+    """Save the residual-alignment pilot separately from anisotropy outputs."""
+    random_gain = torch.stack([row["random_gain"] for row in per_state_by_time])
+    alignment_ratio = torch.stack(
+        [row["alignment_ratio"] for row in per_state_by_time]
+    )
+    probe_percentile = torch.stack(
+        [row["probe_percentile"] for row in per_state_by_time]
+    )
+    propagated_energy = torch.stack(
+        [row["propagated_residual_energy"] for row in per_state_by_time]
+    )
+    random_baseline_energy = torch.stack(
+        [row["random_baseline_energy"] for row in per_state_by_time]
+    )
+    valid = torch.stack([row["valid"] for row in per_state_by_time])
+    npz_values = {
+        "times": np.asarray(times, dtype=np.float64),
+        "residual_norm_squared": residual_norm_squared.numpy(),
+        "residual_aligned_gain": residual_gains.numpy(),
+        "random_gain": random_gain.numpy(),
+        "alignment_ratio": alignment_ratio.numpy(),
+        "probe_percentile": probe_percentile.numpy(),
+        "propagated_residual_energy": propagated_energy.numpy(),
+        "random_baseline_energy": random_baseline_energy.numpy(),
+        "valid": valid.numpy(),
+        "sample_indices": sample_indices,
+        "labels": labels.numpy(),
+    }
+    if save_residual_directions:
+        npz_values["residual_directions"] = residual_directions.numpy()
+    np.savez_compressed(
+        os.path.join(output_dir, "residual_alignment_targets.npz"), **npz_values
+    )
+
+    with open(
+        os.path.join(output_dir, "residual_alignment_summary.json"), "w"
+    ) as f:
+        json.dump({"metadata": metadata, "statistics": summaries}, f, indent=2)
+
+    summary_rows = []
+    for t_value, summary in zip(times, summaries):
+        gamma_stats = summary["alignment_ratio_statistics"]
+        percentile_stats = summary["probe_percentile_statistics"]
+        norm_stats = summary["residual_norm_squared_statistics"]
+        summary_rows.append({
+            "t": t_value,
+            "num_states": summary["num_states"],
+            "num_valid_states": summary["num_valid_states"],
+            "num_filtered_states": summary["num_filtered_states"],
+            "mean_random_gain": summary["mean_random_gain"],
+            "mean_residual_aligned_gain": summary["mean_residual_aligned_gain"],
+            "ratio_of_mean_gains": summary["ratio_of_mean_gains"],
+            "magnitude_weighted_alignment_ratio": summary[
+                "magnitude_weighted_alignment_ratio"
+            ],
+            "median_alignment_ratio": gamma_stats["median"],
+            "q10_alignment_ratio": gamma_stats["q10"],
+            "q90_alignment_ratio": gamma_stats["q90"],
+            "fraction_alignment_ratio_above_one": summary[
+                "fraction_alignment_ratio_above_one"
+            ],
+            "median_probe_percentile": percentile_stats["median"],
+            "q10_probe_percentile": percentile_stats["q10"],
+            "q90_probe_percentile": percentile_stats["q90"],
+            "fraction_probe_percentile_at_least_0_9": summary[
+                "fraction_probe_percentile_at_least_0_9"
+            ],
+            "median_residual_norm_squared": norm_stats["median"],
+            "elapsed_seconds": summary["elapsed_seconds"],
+        })
+    with open(
+        os.path.join(output_dir, "residual_alignment_summary.csv"), "w", newline=""
+    ) as f:
+        writer = csv.DictWriter(f, fieldnames=list(summary_rows[0].keys()))
+        writer.writeheader()
+        writer.writerows(summary_rows)
+
+    state_rows = []
+    for time_index, t_value in enumerate(times):
+        state_data = per_state_by_time[time_index]
+        for state_index in range(len(sample_indices)):
+            state_rows.append({
+                "t": t_value,
+                "state_index": state_index,
+                "dataset_index": int(sample_indices[state_index]),
+                "label": int(labels[state_index]),
+                "valid": bool(state_data["valid"][state_index]),
+                "residual_norm_squared": state_data[
+                    "residual_norm_squared"
+                ][state_index].item(),
+                "residual_aligned_gain": state_data[
+                    "residual_aligned_gain"
+                ][state_index].item(),
+                "random_gain": state_data["random_gain"][state_index].item(),
+                "alignment_ratio": state_data[
+                    "alignment_ratio"
+                ][state_index].item(),
+                "probe_percentile": state_data[
+                    "probe_percentile"
+                ][state_index].item(),
+                "propagated_residual_energy": state_data[
+                    "propagated_residual_energy"
+                ][state_index].item(),
+                "random_baseline_energy": state_data[
+                    "random_baseline_energy"
+                ][state_index].item(),
+            })
+    with open(
+        os.path.join(output_dir, "residual_alignment_state_statistics.csv"),
+        "w",
+        newline="",
+    ) as f:
+        writer = csv.DictWriter(f, fieldnames=list(state_rows[0].keys()))
+        writer.writeheader()
+        writer.writerows(state_rows)
+
+    plot_residual_alignment(output_dir, times, summaries)
+
+
+def plot_residual_alignment(
+    output_dir: str,
+    times: Sequence[float],
+    summaries: List[dict],
+) -> None:
+    import matplotlib
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+
+    random_gain = [row["mean_random_gain"] for row in summaries]
+    residual_gain = [row["mean_residual_aligned_gain"] for row in summaries]
+    gamma_median = [row["alignment_ratio_statistics"]["median"] for row in summaries]
+    gamma_q10 = [row["alignment_ratio_statistics"]["q10"] for row in summaries]
+    gamma_q90 = [row["alignment_ratio_statistics"]["q90"] for row in summaries]
+    percentile_median = [
+        row["probe_percentile_statistics"]["median"] for row in summaries
+    ]
+    percentile_q10 = [row["probe_percentile_statistics"]["q10"] for row in summaries]
+    percentile_q90 = [row["probe_percentile_statistics"]["q90"] for row in summaries]
+
+    figure, axes = plt.subplots(1, 3, figsize=(16, 4.5))
+    axes[0].plot(times, random_gain, marker="o", label="mean random gain")
+    axes[0].plot(times, residual_gain, marker="o", label="mean residual gain")
+    axes[0].set_xlabel("t")
+    axes[0].set_ylabel("flow-map gain")
+    axes[0].grid(alpha=0.3)
+    axes[0].legend()
+
+    axes[1].plot(times, gamma_median, marker="o", label=r"median $\gamma_i$")
+    axes[1].fill_between(times, gamma_q10, gamma_q90, alpha=0.25, label="q10–q90")
+    axes[1].axhline(1.0, color="gray", linestyle="--", linewidth=1)
+    axes[1].set_xlabel("t")
+    axes[1].set_ylabel("residual/random gain ratio")
+    axes[1].grid(alpha=0.3)
+    axes[1].legend()
+
+    axes[2].plot(
+        times, percentile_median, marker="o", label="median probe percentile"
+    )
+    axes[2].fill_between(
+        times, percentile_q10, percentile_q90, alpha=0.25, label="q10–q90"
+    )
+    axes[2].axhline(0.5, color="gray", linestyle="--", linewidth=1)
+    axes[2].set_xlabel("t")
+    axes[2].set_ylabel("residual direction percentile")
+    axes[2].set_ylim(-0.03, 1.03)
+    axes[2].grid(alpha=0.3)
+    axes[2].legend()
+
+    figure.suptitle("Residual alignment with frozen-teacher flow-map gain")
+    figure.tight_layout()
+    figure.savefig(
+        os.path.join(output_dir, "residual_alignment_diagnostics.png"), dpi=180
+    )
+    plt.close(figure)
+
+
 def plot_diagnostics(output_dir: str, times: Sequence[float], summaries: List[dict]) -> None:
     import matplotlib
     matplotlib.use("Agg")
@@ -389,6 +814,7 @@ def main() -> None:
 
     cfg = load_config(cli.config)
     eval_cfg = validate_eval_config(cfg["eval"])
+    residual_cfg = validate_residual_alignment_config(cfg)
     device = torch.device(cli.device or cfg.get("device", "cuda:0"))
     if device.type == "cuda" and not torch.cuda.is_available():
         raise RuntimeError("CUDA was requested but is not available")
@@ -405,12 +831,39 @@ def main() -> None:
     print(f"Loading checkpoint metadata: {ckpt_path}")
     checkpoint = torch.load(ckpt_path, map_location="cpu", weights_only=False)
     model_args = resolve_model_args(checkpoint.get("args"), cfg["model_overrides"] or {})
-    weight_key = "ema" if cfg["checkpoint"].get("use_ema", True) else "model"
+    weight_key = checkpoint_weight_key(cfg["checkpoint"])
     if weight_key not in checkpoint:
         raise KeyError(
             f"Checkpoint has no '{weight_key}' weights; available keys={list(checkpoint.keys())}"
         )
     teacher_weights = checkpoint[weight_key]
+
+    student_ckpt_path = None
+    student_weight_key = None
+    student_model_args = None
+    student_weights = None
+    if residual_cfg["enabled"]:
+        student_ckpt_path = resolve_checkpoint_path(cfg["student_checkpoint"])
+        if os.path.abspath(student_ckpt_path) == os.path.abspath(ckpt_path):
+            student_checkpoint = checkpoint
+        else:
+            student_checkpoint = torch.load(
+                student_ckpt_path, map_location="cpu", weights_only=False
+            )
+        student_model_args = resolve_model_args(
+            student_checkpoint.get("args"),
+            cfg.get("student_model_overrides") or {},
+        )
+        validate_student_model_args(model_args, student_model_args)
+        student_weight_key = checkpoint_weight_key(cfg["student_checkpoint"])
+        if student_weight_key not in student_checkpoint:
+            raise KeyError(
+                f"Student checkpoint has no '{student_weight_key}' weights; "
+                f"available keys={list(student_checkpoint.keys())}"
+            )
+        student_weights = student_checkpoint[student_weight_key]
+        if student_checkpoint is not checkpoint:
+            del student_checkpoint
     del checkpoint
 
     seed = eval_cfg["seed"]
@@ -451,6 +904,16 @@ def main() -> None:
     del teacher_weights
     teacher.eval()
     teacher.requires_grad_(False)
+    student = None
+    if residual_cfg["enabled"]:
+        student = SiT_models[student_model_args.model](
+            input_size=student_model_args.image_size // 8,
+            num_classes=student_model_args.num_classes,
+        ).to(device)
+        student.load_state_dict(student_weights)
+        del student_weights
+        student.eval()
+        student.requires_grad_(False)
     synchronize_device(device)
     initialization_seconds = perf_counter() - experiment_start
 
@@ -462,16 +925,29 @@ def main() -> None:
         f"eta={eval_cfg['eta']:g}, base_steps={eval_cfg['base_steps']}, "
         f"dtype={eval_cfg['compute_dtype']}"
     )
+    if residual_cfg["enabled"]:
+        print(
+            "Residual alignment enabled: "
+            f"student={student_model_args.model}, "
+            f"weights={student_weight_key}, checkpoint={student_ckpt_path}, "
+            f"min_norm={residual_cfg['min_residual_norm']:g}"
+        )
     print(
         f"State pool: first {num_states} of {eval_cfg['sample_pool_size']} fixed samples "
         f"from {data_source}"
     )
 
     targets_by_time, summaries, per_state_by_time = [], [], []
+    residual_gains_by_time = []
+    residual_norm_squared_by_time = []
+    residual_directions_by_time = []
+    residual_summaries = []
+    residual_per_state_by_time = []
     evaluation_start = perf_counter()
     for index, t_value in enumerate(eval_cfg["time_steps"], start=1):
         synchronize_device(device)
         timepoint_start = perf_counter()
+        random_probe_start = perf_counter()
         targets = evaluate_multi_probe_at_time(
             teacher,
             z0,
@@ -486,10 +962,60 @@ def main() -> None:
             device,
         )
         synchronize_device(device)
+        random_probe_seconds = perf_counter() - random_probe_start
+
+        residual_summary = None
+        if residual_cfg["enabled"]:
+            residual_start = perf_counter()
+            (
+                residual_gains,
+                residual_norm_squared,
+                residual_valid,
+                residual_directions,
+            ) = evaluate_residual_alignment_at_time(
+                teacher=teacher,
+                student=student,
+                z0_cpu=z0,
+                z1_cpu=z1,
+                labels_cpu=labels,
+                t_value=t_value,
+                batch_size=eval_cfg["batch_size"],
+                eta=eval_cfg["eta"],
+                base_steps=eval_cfg["base_steps"],
+                compute_dtype=compute_dtype,
+                device=device,
+                min_residual_norm=residual_cfg["min_residual_norm"],
+            )
+            synchronize_device(device)
+            residual_seconds = perf_counter() - residual_start
+            residual_summary, residual_per_state = summarize_residual_alignment(
+                random_targets=targets,
+                residual_gains=residual_gains,
+                residual_norm_squared=residual_norm_squared,
+                residual_valid=residual_valid,
+                denominator_epsilon=eval_cfg["cv_epsilon"],
+            )
+            valid_directions = residual_directions[residual_valid]
+            direction_norm_error = (
+                valid_directions.flatten(1).norm(dim=1)
+                .sub(1.0).abs().max().item()
+            )
+            residual_summary["t"] = t_value
+            residual_summary["elapsed_seconds"] = residual_seconds
+            residual_summary["maximum_unit_direction_norm_error"] = (
+                direction_norm_error
+            )
+            residual_gains_by_time.append(residual_gains)
+            residual_norm_squared_by_time.append(residual_norm_squared)
+            residual_directions_by_time.append(residual_directions)
+            residual_summaries.append(residual_summary)
+            residual_per_state_by_time.append(residual_per_state)
+
         elapsed_seconds = perf_counter() - timepoint_start
         summary, per_state = summarize_anisotropy(targets, eval_cfg["cv_epsilon"])
         summary["t"] = t_value
         summary["elapsed_seconds"] = elapsed_seconds
+        summary["random_probe_elapsed_seconds"] = random_probe_seconds
         targets_by_time.append(targets)
         summaries.append(summary)
         per_state_by_time.append(per_state)
@@ -502,11 +1028,37 @@ def main() -> None:
             f"median_CV2={summary['state_directional_cv2_statistics']['median']:.4g} "
             f"elapsed={format_duration(elapsed_seconds)}"
         )
+        if residual_summary is not None:
+            print(
+                "    residual alignment: "
+                f"valid={residual_summary['num_valid_states']}/{num_states} "
+                f"median_gamma={residual_summary['alignment_ratio_statistics']['median']:.4g} "
+                f"median_percentile={residual_summary['probe_percentile_statistics']['median']:.4g} "
+                f"magnitude_weighted_gamma="
+                f"{residual_summary['magnitude_weighted_alignment_ratio']:.4g}"
+            )
     synchronize_device(device)
     evaluation_seconds = perf_counter() - evaluation_start
     target_tensor = torch.stack(targets_by_time)
     if not torch.isfinite(target_tensor).all():
         raise FloatingPointError("Non-finite anisotropy targets were produced")
+
+    residual_gain_tensor = None
+    residual_norm_squared_tensor = None
+    residual_direction_tensor = None
+    if residual_cfg["enabled"]:
+        residual_gain_tensor = torch.stack(residual_gains_by_time)
+        residual_norm_squared_tensor = torch.stack(residual_norm_squared_by_time)
+        residual_direction_tensor = torch.stack(residual_directions_by_time)
+        residual_valid_tensor = torch.stack(
+            [row["valid"] for row in residual_per_state_by_time]
+        )
+        if not torch.isfinite(residual_gain_tensor[residual_valid_tensor]).all():
+            raise FloatingPointError(
+                "Non-finite residual-aligned gains were produced for valid states"
+            )
+        if not torch.isfinite(residual_norm_squared_tensor).all():
+            raise FloatingPointError("Non-finite residual norms were produced")
 
     t1_index = next(
         (i for i, t in enumerate(eval_cfg["time_steps"]) if t == 1.0), None
@@ -538,6 +1090,7 @@ def main() -> None:
             "directional_fraction measures the directional contribution to absolute "
             "A variation; state_directional_cv2 is the scale-normalized diagnostic"
         ),
+        "residual_alignment_enabled": residual_cfg["enabled"],
         "timing_file": "anisotropy_timing.json",
     }
 
@@ -556,6 +1109,51 @@ def main() -> None:
         metadata,
         eval_cfg["save_states_and_probes"],
     )
+    if residual_cfg["enabled"]:
+        residual_metadata = {
+            "teacher_checkpoint": os.path.abspath(ckpt_path),
+            "teacher_weights": weight_key,
+            "teacher_model": vars(model_args),
+            "student_checkpoint": os.path.abspath(student_ckpt_path),
+            "student_weights": student_weight_key,
+            "student_model": vars(student_model_args),
+            "residual_definition": "student_velocity_minus_teacher_velocity",
+            "residual_direction": "unit_norm_for_nonfiltered_states",
+            "min_residual_norm": residual_cfg["min_residual_norm"],
+            "random_baseline": (
+                "per-state mean over the same normalized Gaussian probe bank"
+            ),
+            "num_states": num_states,
+            "num_random_probes_per_state": eval_cfg["num_probes_per_state"],
+            "sample_pool_size": eval_cfg["sample_pool_size"],
+            "state_selection": "first_num_states_from_fixed_pool",
+            "time_steps": eval_cfg["time_steps"],
+            "eta": eval_cfg["eta"],
+            "base_steps": eval_cfg["base_steps"],
+            "solver": "heun",
+            "compute_dtype": eval_cfg["compute_dtype"],
+            "solver_state_dtype": "float32",
+            "seed": seed,
+            "probe_percentile_definition": (
+                "mean_m[ random_gain_im <= residual_aligned_gain_i ]"
+            ),
+            "timing_file": "anisotropy_timing.json",
+        }
+        save_residual_alignment_outputs(
+            output_dir=output_dir,
+            times=eval_cfg["time_steps"],
+            residual_gains=residual_gain_tensor,
+            residual_norm_squared=residual_norm_squared_tensor,
+            residual_directions=residual_direction_tensor,
+            per_state_by_time=residual_per_state_by_time,
+            summaries=residual_summaries,
+            sample_indices=sample_indices,
+            labels=labels,
+            metadata=residual_metadata,
+            save_residual_directions=residual_cfg[
+                "save_residual_directions"
+            ],
+        )
     save_seconds = perf_counter() - save_start
     finished_at = datetime.now(timezone.utc)
     total_seconds = perf_counter() - experiment_start
@@ -568,6 +1166,17 @@ def main() -> None:
             f"{t:.8g}": row["elapsed_seconds"]
             for t, row in zip(eval_cfg["time_steps"], summaries)
         },
+        "random_probe_timepoint_seconds": {
+            f"{t:.8g}": row["random_probe_elapsed_seconds"]
+            for t, row in zip(eval_cfg["time_steps"], summaries)
+        },
+        "residual_alignment_timepoint_seconds": (
+            {
+                f"{t:.8g}": row["elapsed_seconds"]
+                for t, row in zip(eval_cfg["time_steps"], residual_summaries)
+            }
+            if residual_cfg["enabled"] else {}
+        ),
         "results_save_seconds": save_seconds,
         "total_wall_seconds": total_seconds,
         "allocated_gpu_count": 1,
@@ -576,6 +1185,8 @@ def main() -> None:
     with open(os.path.join(output_dir, "anisotropy_timing.json"), "w") as f:
         json.dump(timing, f, indent=2)
     print(f"Saved anisotropy results to {output_dir}")
+    if residual_cfg["enabled"]:
+        print(f"Saved residual-alignment results to {output_dir}")
     print(
         f"Total elapsed: {format_duration(total_seconds)} "
         f"({total_seconds / 3600.0:.4f} single-GPU hours)"
