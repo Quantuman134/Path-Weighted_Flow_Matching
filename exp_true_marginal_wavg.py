@@ -66,6 +66,9 @@ LATENT_W = 32
 LATENT_D = LATENT_C * LATENT_H * LATENT_W          # 4096
 VAE_SCALE = 0.18215
 
+# NumPy 2.0 renamed `trapz` -> `trapezoid`. Support both.
+_np_trapezoid = getattr(np, "trapezoid", None) or getattr(np, "trapz")
+
 
 # ============================================================
 # Distributed setup
@@ -694,7 +697,7 @@ def write_outputs(
     plt.close()
 
     # Sort by integrated amplification.
-    A_c = np.trapz(per_class_mean, t_grid, axis=1)
+    A_c = _np_trapezoid(per_class_mean, t_grid, axis=1)
     order = np.argsort(A_c)
     fig, ax = plt.subplots(figsize=(10, 8))
     im = ax.imshow(per_class_mean[order], aspect="auto", origin="lower",
@@ -789,7 +792,7 @@ def write_outputs(
                 "early_late_ratio,M_c\n")
         for c in range(C):
             v = per_class_mean[c]
-            A_int = float(np.trapz(v, t_grid))
+            A_int = float(_np_trapezoid(v, t_grid))
             j_max = int(np.argmax(v))
             early_mask = t_grid <= 0.25
             mid_mask   = (t_grid > 0.25) & (t_grid <= 0.75)
@@ -804,7 +807,7 @@ def write_outputs(
                     f"{ratio:.10e},{per_class_meta[c]['M_c']}\n")
 
     # -------- integral ranking plot -----------------------------------------
-    A_int_all = np.array([float(np.trapz(per_class_mean[c], t_grid)) for c in range(C)])
+    A_int_all = np.array([float(_np_trapezoid(per_class_mean[c], t_grid)) for c in range(C)])
     order_r = np.argsort(A_int_all)
     fig, ax = plt.subplots(figsize=(10, max(4, 0.25 * C)))
     ax.barh(range(C), A_int_all[order_r], color="steelblue")
