@@ -27,7 +27,7 @@ experiment:
 # checkpoint's own 'args' (train.py format) or, failing that, the model:
 # block below.
 checkpoint:
-  path: ""                         # e.g. "./results/XXX-<run-name>/checkpoints/0100000.pt"
+  path: "./results/SiT-XL-2-Linear-velocity-None-velocity-IS256-BS1024-imagenet-pretrained/checkpoints/0200000.pt"                         # e.g. "./results/XXX-<run-name>/checkpoints/0100000.pt"
   use_ema: true
   # model_arch: "SiT-XL/2"
   # learn_sigma: true
@@ -52,7 +52,7 @@ base_trajectories:
   # Experiment A uses N=512 base trajectories (see plan section 3.4).
   # With 8 GPUs each rank owns 512/8 = 64 trajectories -> we run all of them in
   # one batch per rank so the 8 GPUs process 8 * 64 = 512 samples in parallel.
-  N: 512
+  N: 256
   batch_size: 64                   # per-forward batch during base sampling
 
 probes:
@@ -69,7 +69,7 @@ stability:
   #   t = 0.5 -> solver index 25 (25 remaining steps)
   #   t = 0.9 -> solver index 45 (5 remaining steps)
   times: [0.0, 0.5, 0.9]
-  etas:  [1.0e-5, 1.0e-4, 1.0e-3, 1.0e-2]
+  etas:  [1.0e-7, 1.0e-6, 1.0e-5, 1.0e-4, 1.0e-3, 1.0e-2]
   # Threshold used to auto-suggest eta_star at the end of the run: the largest
   # eta whose adjacent-eta median disagreement is below this at every time.
   plateau_threshold: 0.05

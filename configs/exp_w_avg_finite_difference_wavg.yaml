@@ -27,7 +27,7 @@ experiment:
 # checkpoint's own 'args' (train.py format) or, failing that, the model:
 # block below.
 checkpoint:
-  path: ""                         # e.g. "./results/XXX-<run-name>/checkpoints/0100000.pt"
+  path: "./results/SiT-XL-2-Linear-velocity-None-velocity-IS256-BS1024-imagenet-pretrained/checkpoints/0200000.pt"                         # e.g. "./results/XXX-<run-name>/checkpoints/0100000.pt"
   use_ema: true
   # model_arch: "SiT-XL/2"
   # learn_sigma: true

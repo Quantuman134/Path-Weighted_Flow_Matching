@@ -63,6 +63,9 @@ class LossSpace(enum.Enum):
     LOGIT_NORMAL_V:           velocity, mean-one SD3 logit-normal w(t) = exp(-(logit(t)-m)^2/(2s^2)) / (s sqrt(2pi) t(1-t))
     COSMAP_V:                 velocity, mean-one SD3 CosMap w(t) = 2 / (pi (1-2t+2t^2))
     RFPP_V:                   velocity, mean-one RF++ U-shaped w(t) = 2 cosh(a(t-1/2))/sinh(a), a=4
+    W_AVG:                    velocity, measured endpoint-error amplification w_avg(t) = 0.3231 + 2.7003 e^{-3.9094 t}
+                              (exponential fit of the finite-difference estimate from exp_w_avg_finite_difference.py;
+                              already mean-one under U(0,1))
     """
 
     VELOCITY = enum.auto()
@@ -88,6 +91,16 @@ class LossSpace(enum.Enum):
     LOGIT_NORMAL_V = enum.auto()
     COSMAP_V = enum.auto()
     RFPP_V = enum.auto()
+    W_AVG = enum.auto()
+
+
+# w_avg(t) = W_AVG_C + W_AVG_A * exp(-W_AVG_B * t), the exponential fit of the
+# finite-difference estimate of the endpoint-error amplification (Experiment B in
+# exp_w_avg_finite_difference.py). Its integral over [0, 1] is 0.99995, i.e. the
+# weight is already mean-one under U(0,1) and needs no post-hoc rescaling.
+W_AVG_C = 0.3231
+W_AVG_A = 2.7003
+W_AVG_B = 3.9094
 
 
 VELOCITY_LOSS_SCALES = {
@@ -108,6 +121,7 @@ VELOCITY_LOSS_SCALES = {
     LossSpace.LOGIT_NORMAL_V:           1.0,
     LossSpace.COSMAP_V:                 1.0,
     LossSpace.RFPP_V:                   1.0,
+    LossSpace.W_AVG:                    1.0,
 }
 
 
@@ -423,6 +437,12 @@ class Transport:
             _a_rfpp = 4.0
             t_ = path.expand_t_like_x(t, xt)
             weight = 2.0 * th.cosh(_a_rfpp * (t_ - 0.5)) / (math.sinh(_a_rfpp) + 1e-8)
+            terms['loss'] = mean_flat(weight * ((model_output - ut) ** 2))
+        elif self.model_type == ModelType.VELOCITY and self.loss_space == LossSpace.W_AVG:
+            # Measured endpoint-error amplification: w(t) = 0.3231 + 2.7003 exp(-3.9094 t),
+            # mean-one under U(0,1) (integral = 0.99995), so no post-hoc scaling is needed.
+            t_ = path.expand_t_like_x(t, xt)
+            weight = W_AVG_C + W_AVG_A * th.exp(-W_AVG_B * t_)
             terms['loss'] = mean_flat(weight * ((model_output - ut) ** 2))
         else:
             _, drift_var = self.path_sampler.compute_drift(xt, t)

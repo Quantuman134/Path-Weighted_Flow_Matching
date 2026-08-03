@@ -53,6 +53,8 @@ _SIT_DIR = os.path.dirname(os.path.abspath(__file__))
 if _SIT_DIR not in sys.path:
     sys.path.insert(0, _SIT_DIR)
 
+from models import SiT_models
+from download import find_model
 from exp_model_validation import (
     resolve_model_args,
     build_model,
@@ -534,7 +536,7 @@ def plot_wavg(t_grid, mean_w, ci_lo, ci_hi, A_sq, out_dir: str,
 
 # ------------------------------------------------------------------ mode: A
 
-def run_stability(cfg, model, model_args, cache_local, labels_local, device, rank,
+def run_stability(cfg, model, model_resolved, cache_local, labels_local, device, rank,
                   world_size, out_dir, seed, num_solver_steps,
                   probe_batch, K):
     """Experiment A: sweep eta at a few timesteps."""
@@ -646,7 +648,7 @@ def run_stability(cfg, model, model_args, cache_local, labels_local, device, ran
         # Broadcast disagree from rank 0 to all ranks not needed; we only save it.
         result = {
             "mode": "stability",
-            "checkpoint": checkpoint_provenance(cfg, model_args),
+            "checkpoint": model_resolved,
             "num_solver_steps": num_solver_steps,
             "times": stab_times,
             "solver_indices": s_list,
@@ -686,7 +688,7 @@ def run_stability(cfg, model, model_args, cache_local, labels_local, device, ran
 
 # ------------------------------------------------------------------ mode: B
 
-def run_wavg(cfg, model, model_args, cache_local, labels_local, device, rank,
+def run_wavg(cfg, model, model_resolved, cache_local, labels_local, device, rank,
              world_size, out_dir, seed, num_solver_steps, probe_batch, K):
     """Experiment B: 16-timestep w_avg(t) estimate at fixed eta_star."""
     wcfg = cfg["wavg"]
@@ -795,7 +797,7 @@ def run_wavg(cfg, model, model_args, cache_local, labels_local, device, rank,
 
         result = {
             "mode": "wavg",
-            "checkpoint": checkpoint_provenance(cfg, model_args),
+            "checkpoint": model_resolved,
             "num_solver_steps": num_solver_steps,
             "eta_star": eta_star,
             "solver_indices": s_grid,
@@ -952,11 +954,11 @@ def main():
 
     # ── dispatch ─────────────────────────────────────────────────────────────
     if mode == "stability":
-        run_stability(cfg, model, model_args, cache_local, labels_local, device,
+        run_stability(cfg, model, model_resolved, cache_local, labels_local, device,
                       rank, world_size, exp_dir, seed, num_solver_steps,
                       probe_batch, K)
     elif mode == "wavg":
-        run_wavg(cfg, model, model_args, cache_local, labels_local, device, rank,
+        run_wavg(cfg, model, model_resolved, cache_local, labels_local, device, rank,
                  world_size, exp_dir, seed, num_solver_steps, probe_batch, K)
 
     if rank == 0:

@@ -86,6 +86,8 @@ def create_transport(
         loss_space_type = LossSpace.COSMAP_V
     elif loss_space == "rfpp_v":
         loss_space_type = LossSpace.RFPP_V
+    elif loss_space == "w_avg":
+        loss_space_type = LossSpace.W_AVG
     else:
         # default: match model type
         loss_space_type = LossSpace.TARGET if model_type == ModelType.TARGET else LossSpace.VELOCITY
